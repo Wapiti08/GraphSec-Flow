@@ -4,6 +4,8 @@
  # @ Description: greedy search from the closest neighbors to a specified point in graph p
  '''
 import numpy as np
+import heapq
+
 
 class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
@@ -59,9 +61,46 @@ class VamanaSearch:
         if self.entry_point is None:
             return []
         
+        # initial best point
+        current = self.entry_point
+        curr_dist = self._distance(query, self.data[current])
+        
+        improved = True
+        # greedy search to reach a local minima
+        while improved:
+            improved = False
+            
+            for neighbor in self.graph[current]:    
+                d = self._distance(query, self.data[neighbor])
+                if d < curr_dist:
+                    # move to neighbor
+                    current = neighbor
+                    curr_dist = d
+                    improved = True
+        
+        # best-first search around local minima
+        visited = set([current])
+        heap = [(curr_dist, current)]
+        topk = [] # will store (-dist, idx) for max-heap
 
+        ef = max(self.ef_construction, k)  # ensure ef is at least k
 
+        while heap and len(visited) < ef:
+            dist_top, idx_top = heapq.heappop(heap)
+            # add to topk: in order to work as a maximum heap, we use negative distances
+            heapq.heappush(topk, (-dist_top, idx_top))
+            # explore neighbors
+            for n in self.graph[idx_top]:
+                if n in visited:
+                    continue
+                visited.add(n)
+                d = self._distance(query, self.data[n])
+                # candidate for topk
+                heapq.heappush(heap, (d, n))
 
+        # extract k best from topk
+        result = [idx for _, idx in heapq.nsmallest(k, topk)]
+        return result
 
     def add_point(self, vector):
         ''' insert a new vector into the graph
@@ -81,10 +120,17 @@ class VamanaSearch:
             return
         
         # 1. Search for candidates using a best-first search
-        
+        candidates = self.search(vector, k = self.ef_construction)
+        # build list of (distance, idx)
+        dist_candidates = [(self._distance(vector, self.data[i]), i) for i in candidates]
 
+        # 2. Prune candidates to M best neighbors
+        neighbors = self._select_neighbors(dist_candidates, self.M)
 
-
+        # 3. Link new node with chosen neighbors
+        for n in neighbors:
+            self.graph[idx].append(n)
+            self.graph[n].append(idx)
 
 if __name__ == "__main__":
 
