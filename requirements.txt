@@ -14,3 +14,4 @@ pywhy-graphs=0.1.0
 pgmpy==0.1.26
 python-dotenv==1.0.1
 community==1.0.0b1
+mitrecve==1.1.1
