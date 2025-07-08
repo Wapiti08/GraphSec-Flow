@@ -15,3 +15,4 @@ pgmpy==0.1.26
 python-dotenv==1.0.1
 community==1.0.0b1
 mitrecve==1.1.1
+numpy==1.26.4
