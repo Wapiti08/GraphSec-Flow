@@ -42,7 +42,7 @@ if __name__ == "__main__":
     # Example usage
     cve_id = "CVE-2016-9910"
     osv_id = "OSV-2020-111"
-    package = "faker"
+    package = "org.jenkins-ci.main:cli:1.591"
     cwe_id = "CWE-401"
     # cve_data = nvd_cve_api(cve_id)
     # print("---- NVD CVE API ----")
@@ -50,7 +50,7 @@ if __name__ == "__main__":
     # cwe_data = nvd_cwe_api(cve_id)
     # print("---- NVD CWE API ----")
     # print(cwe_data)
-    packages = ["faker", "cache", "1cggeydu", "FfiHelper"]
+    # packages = ["faker", "cache", "1cggeydu", "FfiHelper"]
     cve_data = mitre_cve_api(package)
     print("---- MITRE CVE API ----")
     print(cve_data)

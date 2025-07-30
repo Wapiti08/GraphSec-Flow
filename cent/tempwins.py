@@ -7,8 +7,10 @@
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
+from pathlib import Path
+import pickle
 
-class TempWindsSelec:
+class TempWinSelect:
     def __init__(self, centrality_scores, timestamps):
         self.centrality_scores = centrality_scores
         self.timestamps = timestamps
@@ -41,3 +43,15 @@ class TempWindsSelec:
         time_window = [(self.timestamps[i], self.centrality_scores[i]) for i in range(start_idx, end_idx) if i in peaks]
         return time_window
 
+
+if __name__ == "__main__":
+    # data path
+    small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
+    depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
+
+    # load the graph
+    with small_depdata_path.open('rb') as fr:
+        depgraph = pickle.load(fr)
+    
+    # initialize tempcentricity
+    tempcent = TempWinSelect(depgraph)

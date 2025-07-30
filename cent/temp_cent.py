@@ -4,6 +4,8 @@
  # @ Description: temporal centricity calculation for nodes in a graph
  '''
 import networkx as nx
+from pathlib import Path
+import pickle
 
 class TempCentricity:
     """ Calculate temporal centricity for nodes in a graph
@@ -24,6 +26,7 @@ class TempCentricity:
 
         # add edges within the time window
         for u, v, data in self.graph.edges(data=True):
+            print(u, v, data)
             if t_s <= data['timestamp'] <= t_e:
                 temporal_subgraph.add_edge(u, v, timestamp=data['timestamp'])
         
@@ -54,3 +57,23 @@ class TempCentricity:
         eigenvector_centrality = nx.eigenvector_centrality(temporal_subgraph)
 
         return eigenvector_centrality
+
+
+if __name__ == "__main__":
+    # data path
+    small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
+    depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
+
+    # load the graph
+    with small_depdata_path.open('rb') as fr:
+        depgraph = pickle.load(fr)
+    
+    # initialize tempcentricity
+    tempcent = TempCentricity(depgraph)
+
+    # calculate degree centrality in the time window
+    t_s, t_e = 0, 10
+    temp_graph = tempcent._extract_temporal_subgraph(t_s, t_e)
+
+
+
