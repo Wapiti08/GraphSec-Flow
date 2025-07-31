@@ -15,6 +15,7 @@ from tqdm import tqdm
 import os
 import uuid
 import json
+import random
 
 logging.basicConfig(level=logging.DEBUG,
                     format='%(asctime)s [%(levelname)s]: %(message)s',
@@ -52,8 +53,11 @@ def process_edges_chunk(chunk, release_nodes, time_ranges, nodes, rel_to_soft,
                         if release in release_nodes:  # Ensure the release exists in the graph
                             tgt_timestamp = get_timestamp(nodes[release])  # Timestamp of the target release
                             if src_range[0] <= tgt_timestamp < src_range[1]:  # Check if within range
+                            
                                 # add src node attributes
                                 if src not in local_graph:
+                                    print('111111')
+                                    print(nodes[src])
                                     local_graph.add_node(src, **{
                                         'version': nodes[src].get('version', ''),
                                         'timestamp': nodes[src].get('timestamp', '')
@@ -61,6 +65,8 @@ def process_edges_chunk(chunk, release_nodes, time_ranges, nodes, rel_to_soft,
 
                                 # add tgt node attributes
                                 if release not in local_graph:
+                                    print('222222')
+                                    print(nodes[release])
                                     local_graph.add_node(release, **{
                                         'version': nodes[release].get('version', ''),
                                         'timestamp': nodes[release].get('timestamp', '')
@@ -255,18 +261,6 @@ def load_data(file_path):
     with file_path.open('rb') as f:
         data = pickle.load(f)
     
-    if isinstance(data, list) or isinstance(data, tuple):
-        data = data[:10000]
-
-    elif isinstance(data, dict):
-        data =  dict(list(data.items())[:10000])
-
-    elif isinstance(data, set):
-        data = set(list(data)[:10000])
-
-    else:
-        raise TypeError(f"Unsupported data type: {type(data)}")
-    
     return data['nodes'], data['edges']
 
 if __name__ == "__main__":
@@ -274,7 +268,7 @@ if __name__ == "__main__":
     nodes_edges_path = Path.cwd().parent.joinpath("data", 'graph_nodes_edges.pkl')
     nodes, edges = load_data(nodes_edges_path)
 
-    dep_graph_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
+    dep_graph_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
 
     depgraph = DepGraph(nodes, edges)
     

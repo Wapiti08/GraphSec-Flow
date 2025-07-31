@@ -62,18 +62,25 @@ class TempCentricity:
 if __name__ == "__main__":
     # data path
     small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
+    small_depdata_path = Path.cwd().parent.joinpath("data", "subgraph_2011_4db3bdf6984e454ebb2ce04afb7745d8.graphml")
+
     depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
 
     # load the graph
-    with small_depdata_path.open('rb') as fr:
-        depgraph = pickle.load(fr)
+    # with small_depdata_path.open('rb') as fr:
+    #     depgraph = pickle.load(fr)
+
+    depgraph = nx.read_graphml(small_depdata_path)
     
     # initialize tempcentricity
     tempcent = TempCentricity(depgraph)
 
     # calculate degree centrality in the time window
     t_s, t_e = 0, 10
-    temp_graph = tempcent._extract_temporal_subgraph(t_s, t_e)
+    degree_cent = tempcent.degree_centrality(t_s, t_e)
+    print("degree centrality:", degree_cent)
+    eigen_cent = tempcent.eigenvector_centrality(t_s, t_e)
+    print("eigenvector centrality:", eigen_cent)
 
 
 
