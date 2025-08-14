@@ -23,12 +23,12 @@ logger = logging.getLogger(__name__)
 # worker globals & helpers
 _G: Dict[str, Any] = {}
 
-def _worker_init(**kwargs):
+def _worker_init(settings):
     '''
     Called once per worker. Stores large, read-only structures to avoid
     resending them with every task.
     '''
-    _G.update(kwargs)
+    _G.update(settings)
 
 def _releases_in_range(software_id: str, start_ts: int, end_ts: int ) -> Iterator[str]:
     '''
@@ -215,7 +215,7 @@ class DepGraph:
             rels.sort(key=lambda x: x[1])
         return software_releases
     
-    def time_range(self, software_to_release: Dict[str, List[Tuple[str, int]]]
+    def time_ranges(self, software_to_release: Dict[str, List[Tuple[str, int]]]
                 ) -> Dict[str, Tuple[int, float]]:
         '''
         for each release, define a half-open validity range [ts_i, ts_{i+1})
@@ -305,7 +305,7 @@ class DepGraph:
         with Pool(
             processes=nproc,
             initializer = _worker_init,
-            initargs=dict(
+            initargs=(dict(
                 nodes=self.nodes,
                 is_release=self.is_release,
                 get_timestamp=self.get_timestamp,
@@ -314,7 +314,7 @@ class DepGraph:
                 release_ts=release_ts,
                 soft_to_rel=soft_to_rel,
                 soft_ts_lists=soft_ts_lists,
-            ),
+            ),),
         ) as pool:
             iterator = pool.imap_unordered(
                 process_edges_chunk,
@@ -372,6 +372,7 @@ if __name__ == "__main__":
     fh.setLevel(logging.DEBUG)
     fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     logger.addHandler(fh)
+
 
     nodes_edges_path = Path.cwd().parent.joinpath("data", 'graph_nodes_edges.pkl')
     dep_graph_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
