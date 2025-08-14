@@ -4,285 +4,386 @@
  # @ Description: extract the dependency nodes only and construct new dependency based on timeline info
  '''
 
+from __future__ import annotations
+
 from collections import defaultdict
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
+from bisect import bisect_left
 import logging
 import pickle
 import networkx as nx
-from functools import partial
-from tqdm import tqdm
-import os
-import uuid
 import json
-import random
+import os
+from typing import Dict, Iterable, Iterator, List, Tuple, Any, Optional
 
-logging.basicConfig(level=logging.DEBUG,
-                    format='%(asctime)s [%(levelname)s]: %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S'
-                )
+
 logger = logging.getLogger(__name__)
-file_handler = logging.FileHandler('dep_graph.log')
-file_handler.setLevel(logging.DEBUG)
-file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(file_formatter)
-logger.addHandler(file_handler)
 
+# worker globals & helpers
+_G: Dict[str, Any] = {}
 
-# Define a wrapper function for processing chunks
-def process_wrapper(chunk,release_nodes, time_ranges, nodes, rel_to_soft, get_timestamp, is_release):
-        return process_edges_chunk(
-            chunk, release_nodes, time_ranges, nodes, rel_to_soft, get_timestamp, is_release
-    )
+def _worker_init(**kwargs):
+    '''
+    Called once per worker. Stores large, read-only structures to avoid
+    resending them with every task.
+    '''
+    _G.update(kwargs)
 
+def _releases_in_range(software_id: str, start_ts: int, end_ts: int ) -> Iterator[str]:
+    '''
+    return release IDs for a software where timestamp in [start_ts, end_ts)
+    user pre-sorted lists + bisect for O(log n) indexing    
+    '''
+    rels = _G['soft_to_rel'].get(software_id)
+    if not rels:
+        return iter(())
+    ts_list = _G['soft_ts_lists'][software_id]
+    i = bisect_left(ts_list, start_ts)
+    j = bisect_left(ts_list, end_ts)
+    # yield only release ids
+    return (rels[k][0] for k in range(i, j))
 
-def process_edges_chunk(chunk, release_nodes, time_ranges, nodes, rel_to_soft, 
-                    get_timestamp, is_release):
-    """
-    Worker function to process a chunk of edges.
-    """
-    local_graph = nx.DiGraph()
-    rel_to_soft_map = rel_to_soft()
+def process_edges_chunk(chunk: List[Tuple[str, str, Dict[str, Any]]]):
+    '''
+    worker: consume a chunk of edges, produce:
+        - edges_out: list of (u, v)
+        - node_attrs: dict node_id -> {attrs}
+    '''
+    nodes      =  _G['nodes']
+    is_release =  _G["is_release"]
+    get_ts     = _G['get_timestamp']
+    time_ranges = _G["time_ranges"]
+    release_nodes = _G["release_nodes"]
+    release_ts   = _G['release_ts']   # precomputed for release ids (fast path)
+
+    edges_out: List[Tuple[str, str]] = []
+    node_attrs: Dict[str, Dict[str, Any]] = {}
+
+    def _ensure_attrs(nid: str):
+        if nid not in node_attrs:
+            n = nodes[nid]
+            node_attrs[nid] = {
+                "version": n.get("version", ""),
+                "timestamp": n.get("timestamp", "")
+            }
+        
     for src, tgt, _ in chunk:
-        if is_release(nodes[src]):  # Only consider release nodes for the source
-            src_range = time_ranges.get(src, (0, float('inf')))
-            if not is_release(nodes[tgt]):  # If the target is a software node
-                # Get all releases for the target software
-                if tgt in rel_to_soft_map:  # Check if the software has associated releases
-                    for release in rel_to_soft_map[tgt]:  # Iterate through all releases of the software
-                        if release in release_nodes:  # Ensure the release exists in the graph
-                            tgt_timestamp = get_timestamp(nodes[release])  # Timestamp of the target release
-                            if src_range[0] <= tgt_timestamp < src_range[1]:  # Check if within range
-                            
-                                # add src node attributes
-                                if src not in local_graph:
-                                    print('111111')
-                                    print(nodes[src])
-                                    local_graph.add_node(src, **{
-                                        'version': nodes[src].get('version', ''),
-                                        'timestamp': nodes[src].get('timestamp', '')
-                                    })
+        # only consider release sources
+        src_node = nodes[src]
+        if not is_release(src_node):
+            continue
 
-                                # add tgt node attributes
-                                if release not in local_graph:
-                                    print('222222')
-                                    print(nodes[release])
-                                    local_graph.add_node(release, **{
-                                        'version': nodes[release].get('version', ''),
-                                        'timestamp': nodes[release].get('timestamp', '')
-                                    })
+        src_lo, src_hi = time_ranges.get(src, (0, float('inf')))
 
-                                local_graph.add_edge(src, release)  # Add edge between releases
-                                
-            elif is_release(nodes[tgt]):  # If the target is also a release
-                tgt_timestamp = get_timestamp(nodes[tgt])  # Timestamp of the target release
-                if src_range[0] <= tgt_timestamp < src_range[1]:
-                    local_graph.add_edge(src, tgt)  # Add direct edge between releases
-    
-    # save the subgraph to disk
-    subgraph_file = Path.cwd().parent.joinpath('data', f"subgraph_{os.getpid()}_{uuid.uuid4().hex}.graphml")
-    nx.write_graphml(local_graph, subgraph_file)
+        tgt_node = nodes[tgt]
+        # Case A: target is software (not a release) -> connect to its releases in range
+        if not is_release(tgt_node):
+            for rel in _releases_in_range(tgt, src_lo, src_hi):
+                if rel in release_nodes:
+                    edges_out.append((src, rel))
+                    _ensure_attrs(src)
+                    _ensure_attrs(rel)
+        
+        # Case B: target is a release -> direct edge if in rane
+        else:
+            tgt_ts = release_ts.get(tgt)
+            if tgt_ts is None:
+                tgt_ts = get_ts(tgt_node)
+                release_ts[tgt] = tgt_ts 
+            if src_lo <= tgt_ts < src_hi:
+                edges_out.append((src, tgt))
+                _ensure_attrs(src)
+                _ensure_attrs(tgt)
+    # return edges and node attributes
+    return edges_out, node_attrs
 
-    return subgraph_file
+# --------------------------------------------------------------
+# Main class
+# --------------------------------------------------------------
 
 class DepGraph:
-    def __init__(self, nodes, edges):
+    def __init__(self, nodes: Dict[str, Dict[str, Any]],
+                edges: List[Tuple[str, str, Dict[str, Any]]]):
+        '''
+        nodes: {node_id: {labels, version, timestamp, type, value, ...}}
+        edges: [(src_id, tgt_id, {'label': ...}), ...]
+        '''
         self.nodes = nodes
         self.edges = edges
         self.get_addvalue_edges()
 
-    def str_to_json(self, escaped_json_str):
+    # ------------------------ Utility helpers ------------------------
+
+    def str_to_json(self, maybe_str: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(maybe_str, str):
+            return None
         try:
-            clean_str = escaped_json_str.replace('\\"', '"')
-            return json.loads(clean_str)
-        except ValueError as e:
-            print(f"Error parsing JSON: {e}")
+            clean = maybe_str.replace('\\"', '"')
+            return json.loads(clean)
+        except Exception:
             return None
 
-    def get_addvalue_edges(self,):
-        # source node is release, target node is addedvalue
-        self.addvalue_dict = defaultdict(list)
+    def get_timestamp(self, node: Dict[str, Any]) -> int:
+        try:
+            return int(node.get("timestamp", 0))
+        except Exception:
+            return 0
 
-        # Iterate over the edges and add the targets for each source where the label is 'addedValues'
-        for source, target, edge_att in self.edges:
-            if edge_att['label'] == "addedValues":
-                self.addvalue_dict[source].append(target)
-
-    def cve_check(self, target:str):
-        # get attribute nodes
-        node_list = self.addvalue_dict[target]
-        for node_id in node_list:
-            node = self.nodes[node_id]
-            if node['type'] == "CVE" and self.str_to_json(node["value"])['cve'] !=[]:
-                return True
-            else:
-                return False
-
-    def get_timestamp(self, node: dict):
-        return int(node.get("timestamp", 0))
-    
-    def covt_ngb_format(self,):
-        node_ngbs = {}
-
-        for source, target in self.edges:
-            node_ngbs.setdefault(source, []).append(target)
-        
-        return node_ngbs
-
-    def is_release(self, node: dict):
-        if node["labels"] == ":Release":
-            return True
-        else:
+    def is_release(self, node: Dict[str, Any]) -> bool:
+        labels = node.get("labels", [])
+        if isinstance(labels, str):
+            return labels == ":Release"
+        # handle list-like
+        try:
+            return ":Release" in labels
+        except Exception:
             return False
 
-    def get_releases(self,):
-        return {node_id: data for node_id, data in self.nodes.items() if data['labels'] == ":Release"}
+    # ------------------------ AddedValue / CVE ------------------------
+
+    def get_addvalue_edges(self) -> None:
+        """Build source->list of AddedValue node ids for label=='addedValues'."""
+        self.addvalue_dict: Dict[str, List[str]] = defaultdict(list)
+        for source, target, edge_att in self.edges:
+            if edge_att.get('label') == "addedValues":
+                self.addvalue_dict[source].append(target)
+
+    def cve_check(self, source: str) -> bool:
+        """Return True if any AddedValue node attached to `source` has non-empty 'cve'."""
+        for node_id in self.addvalue_dict.get(source, []):
+            node = self.nodes.get(node_id, {})
+            if node.get('type') == "CVE":
+                data = self.str_to_json(node.get("value", "{}")) or {}
+                if data.get('cve'):
+                    return True
+        return False
+
+    # ------------------------ Neighborhood & filters ------------------------
+
+    def covt_ngb_format(self) -> Dict[str, List[str]]:
+        """Build adjacency as {src: [tgt, ...]} from triple edges."""
+        node_ngbs: Dict[str, List[str]] = {}
+        for source, target, _ in self.edges:
+            node_ngbs.setdefault(source, []).append(target)
+        return node_ngbs
+
+    def get_releases(self) -> Dict[str, Dict[str, Any]]:
+        return {nid: data for nid, data in self.nodes.items() if self.is_release(data)}
+
+
+    def get_cve_releases(self) -> Dict[str, Dict[str, Any]]:
+        """If you want only releases that have CVE AddedValues attached."""
+        return {
+            nid: data for nid, data in self.nodes.items()
+            if data.get('labels') == ":AddedValue" and self.cve_check(nid)
+        }
     
-    def get_cve_releases(self,):
-        return {node_id: data for node_id, data in self.nodes.items() if data['labels'] == ":Release" and self.cve_check(node_id)}
-
-    def rel_to_soft(self):
-        ''' build the dict to map parent software to release
-        
-        '''
-        release_to_software = {}
-
+    
+    def rel_to_soft(self) -> Dict[str, str]:
+        """
+        Build release->software mapping from:
+          - 'dependency': source=software, target=release
+          - 'relationship_AR': source=release, target=software
+        """
+        release_to_software: Dict[str, str] = {}
         for src, tgt, attr in self.edges:
-            if attr['label'] == "dependency":
-                # source is software, target is release
+            label = attr.get('label')
+            if label == "dependency":
+                # software -> release
                 release_to_software[tgt] = src
-            elif attr['label'] == 'relationship_AR':
+            elif label == "relationship_AR":
+                # release -> software
                 release_to_software[src] = tgt
-
         return release_to_software
+    
 
-    def soft_to_rel(self, release_to_software: dict):
-        ''' group releases by software using the mapping
+    def soft_to_rel(self, release_to_software: Dict[str, str]
+                    ) -> Dict[str, List[Tuple[str, int]]]:
+        """
+        Group releases by software with timestamps, sorted ascending by ts.
+        Returns: {software_id: [(release_id, ts), ...]}
+        """
+        software_releases: Dict[str, List[Tuple[str, int]]] = defaultdict(list)
+        for release, software in release_to_software.items():
+            node = self.nodes.get(release)
+            if not node:
+                continue
+            ts = self.get_timestamp(node)
+            software_releases[software].append((release, ts))
+        for s, rels in software_releases.items():
+            rels.sort(key=lambda x: x[1])
+        return software_releases
+    
+    def time_range(self, software_to_release: Dict[str, List[Tuple[str, int]]]
+                ) -> Dict[str, Tuple[int, float]]:
+        '''
+        for each release, define a half-open validity range [ts_i, ts_{i+1})
+        within the same software line; last one is open-ended (inf).
+        Returns: {release_id: (start_ts, end_ts)}
+        '''
+        tr: Dict[str, Tuple[int, float]] = {}
+        for _soft, rels in software_to_release.items():
+            if not rels:
+                continue
+            ts_list = [ts for _, ts in rels] + [float('inf')]
+            for i, (rid, ts) in enumerate(rels):
+                tr[rid] = (ts, ts_list[i + 1])
+        
+        return tr
+    
+    def filter_edges(self) -> Iterator[Tuple[str, str, Dict[str, Any]]]:
+        """
+        Yield only edges we care about (dependency and relationship_AR),
+        preserving original direction:
+          - dependency: software -> release
+          - relationship_AR: release  -> software
+        """
+        for src, tgt, attr in self.edges:
+            label = attr.get('label')
+            if label in {'dependency', 'relationship_AR'}:
+                yield (src, tgt, attr)
+    
+    # ---------------------- Chunking ----------------------
+    
+    @staticmethod
+    def _chunk_generator(generator: Iterable[Any], chunk_size: int) -> Iterator[List[Any]]:
+        ''' yield lists of size chunk_size from an iterable/generator
         
         '''
-        software_releases = defaultdict(list)
-
-        for release, software in release_to_software.items():
-            timestamp = self.get_timestamp(self.nodes[release])  
-            software_releases[software].append((release, timestamp))
-
-        # sort releases for each software by timestamp
-        for software, releases in software_releases.items():
-            software_releases[software] = sorted(releases, key=lambda x: x[1])
-
-        return software_releases
-
-    def time_ranges(self, software_to_release: dict):
-        timestamp_ranges = {}
-        for software, releases in software_to_release.items():
-            timestamps = [ts for _, ts in releases] + [float('inf')]  # Add open-ended range
-            for i, (nid, timestamp) in enumerate(releases):
-                timestamp_ranges[nid] = (timestamp, timestamps[i + 1])
-        return timestamp_ranges
-
-    def filter_edges(self,):
-        for src, tgt, attr in self.edges:
-            if attr['label'] in {'dependency', 'relationship_AR'}:
-                yield (src, tgt if attr['label'] == 'dependency' else tgt, src)
-    
-    def chunk_generator(self, generator, chunk_size):
-        """
-        Breaks a generator into chunks of size `chunk_size`.
-        """
-        chunk = []
+        chunk: List[Any] = []
         for item in generator:
             chunk.append(item)
             if len(chunk) == chunk_size:
                 yield chunk
                 chunk = []
-        if chunk:  # Yield remaining items
+        if chunk:
             yield chunk
-
-    def dep_graph_build_parallel(self, filter_edges, time_ranges):
-        """
-        Parallelized version of dep_graph_build.
-        """
-        # Get release nodes
-        # release_nodes = self.get_releases()
-        release_nodes = self.get_cve_releases()
-        # Precompute other reusable data
-        nodes = self.nodes
-        rel_to_soft = self.rel_to_soft
-        get_timestamp = self.get_timestamp
-        is_release = self.is_release
-        
-        # Split edges into chunks for parallel processing
-        num_processes = cpu_count()
-        print('Available cpu count is', num_processes)
-
-        # get the total number of edges
-        filter_edges = list(filter_edges)
-        total_edges = len(filter_edges)
-
-        # self-adaptive chunk size based on the number of edges and processes
-        factor = 4
-        chunk_size = max(1, total_edges // (num_processes * factor))
-        print(f"Total edges: {total_edges}, Chunk size per process: {chunk_size}")
-
-        edge_chunks = self.chunk_generator(filter_edges, chunk_size)
-        
-        # Use multiprocessing pool to process chunks in parallel
-        with Pool(processes=num_processes) as pool:
-            subgraph_files = list(tqdm(
-                pool.imap(
-                    partial(process_wrapper,  # Pass the global function
-                            release_nodes=release_nodes, time_ranges=time_ranges, nodes=nodes,
-                            rel_to_soft=rel_to_soft, get_timestamp=get_timestamp, 
-                            is_release=is_release),
-                    edge_chunks
-                ),
-                desc="Parallel graph build",
-            ))
-
-        # Combine all subgraphs into one graph
-        combined_graph = nx.DiGraph()
-        for subgraph_file in subgraph_files:
-            subgraph = nx.read_graphml(subgraph_file)
-            combined_graph.update(subgraph)
-            os.remove(subgraph_file)
-        
-        return combined_graph
-
-    def graph_save(self, new_graph, graph_path):
-        with graph_path.open('wb') as fw:
-            pickle.dump(new_graph, fw)
     
-    def graph_load(self, graph_path):
+    # -------------------- Parallel build ---------------------
+    
+    def dep_graph_build_parallel(
+        self,
+        filtered_edges: Iterable[Tuple[str, str, Dict[str, Any]]],
+        time_ranges: Dict[str, Tuple[int, float]],
+        processes: Optional[int] = None,
+        progress: bool = True,
+
+    ) -> nx.DiGraph:
+        ''' build a dependency DiGraph in parallel
+        - filtered_edges: iterable of (src, tgt, attr) from self.filter_edges()
+        - time_ranges: release_id -> (start_ts, end_ts)
+        
+        '''
+        try:
+            from tqdm import tqdm  # lazy import
+        except Exception:
+            progress = False
+
+        release_nodes_dict = self.get_releases()
+        release_nodes_set = set(release_nodes_dict.keys())
+
+        # precomputations (once, in parent)
+        rel_to_soft_map = self.rel_to_soft()
+        # {soft: [(rel, ts), ...]}
+        soft_to_rel = self.soft_to_rel(rel_to_soft_map)
+        soft_ts_lists = {s: [ts for _, ts in rels] for s, rels in soft_to_rel.items()}
+        release_ts = {rid: self.get_timestamp(self.nodes[rid]) for rid in release_nodes_set}
+
+        # materialize edges 
+        fedges = list(filtered_edges)
+        total_edges = len(fedges)
+
+        nproc = processes or cpu_count()
+        factor = 4
+        chunk_size = max(1, total_edges // (nproc * factor)) if total_edges else 1
+        
+        logger.debug("dep_graph_build_parallel: total_edges=%d nproc=%d chunk_size=%d",
+                total_edges, nproc, chunk_size)
+        
+        # Pool with globals via initializer
+        with Pool(
+            processes=nproc,
+            initializer = _worker_init,
+            initargs=dict(
+                nodes=self.nodes,
+                is_release=self.is_release,
+                get_timestamp=self.get_timestamp,
+                time_ranges=time_ranges,
+                release_nodes=release_nodes_set,
+                release_ts=release_ts,
+                soft_to_rel=soft_to_rel,
+                soft_ts_lists=soft_ts_lists,
+            ),
+        ) as pool:
+            iterator = pool.imap_unordered(
+                process_edges_chunk,
+                self._chunk_generator(fedges, chunk_size),
+                chunksize=1,
+            )
+            if progress and total_edges:
+                from tqdm import tqdm
+                iterator = tqdm(
+                    iterator,
+                    total=(total_edges + chunk_size - 1) // chunk_size,
+                    desc="Parallel graph build",
+                )
+            results = list(iterator)
+
+        # combine into a single graph (in-memory, no disk roundtrip)
+        combined = nx.DiGraph()
+        for edges_out, attrs in results:
+            if attrs:
+                combined.add_nodes_from((nid, a) for nid, a in attrs.items())
+            if edges_out:
+                combined.add_edges_from(edges_out)
+        
+        return combined
+    
+
+    # ------------ save/load --------------
+
+    @staticmethod
+    def graph_save(new_graph: nx.Graph, graph_path: Path) -> None:
+        with graph_path.open('wb') as fw:
+            pickle.dump(new_graph, fw, protocol=pickle.HIGHEST_PROTOCOL)
+
+    @staticmethod
+    def graph_load(graph_path: Path) -> nx.Graph:
         with graph_path.open('rb') as fr:
             return pickle.load(fr)
+        
 
-
-def load_data(file_path):
+def load_data(file_path: Path) -> Tuple[Dict[str, Dict[str, Any]],
+                                        List[Tuple[str, str, Dict[str, Any]]]]:
     with file_path.open('rb') as f:
         data = pickle.load(f)
-    
     return data['nodes'], data['edges']
 
+
 if __name__ == "__main__":
+    # Configure logging once (safe for multiprocessing on spawn)
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s]: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    fh = logging.FileHandler('dep_graph.log')
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    logger.addHandler(fh)
 
     nodes_edges_path = Path.cwd().parent.joinpath("data", 'graph_nodes_edges.pkl')
-    nodes, edges = load_data(nodes_edges_path)
-
     dep_graph_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
 
-    depgraph = DepGraph(nodes, edges)
-    
-    if not dep_graph_path.exists():
-        release_to_software = depgraph.rel_to_soft()
-        software_releases = depgraph.soft_to_rel(release_to_software)
-        time_rangs = depgraph.time_ranges(software_releases)
-
-        # get the filtered edges
-        filter_edges = depgraph.filter_edges()
-
-        graph = depgraph.dep_graph_build_parallel(filter_edges, time_rangs)
-        # save graph
-        depgraph.graph_save(graph, dep_graph_path)
-
-    else:
-        G = depgraph.graph_load(dep_graph_path)
+    nodes, edges = load_data(nodes_edges_path)
+    dg = DepGraph(nodes, edges)
+    # Build mappings & ranges
+    rel2soft = dg.rel_to_soft()
+    soft2rel = dg.soft_to_rel(rel2soft)
+    tranges = dg.time_ranges(soft2rel)
+    # Filter edges and build combined graph
+    filt = dg.filter_edges()
+    G = dg.dep_graph_build_parallel(filt, tranges)
+    # Save
+    dg.graph_save(G, dep_graph_path)
