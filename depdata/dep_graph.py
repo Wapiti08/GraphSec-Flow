@@ -183,16 +183,16 @@ class DepGraph:
     def rel_to_soft(self) -> Dict[str, str]:
         """
         Build release->software mapping from:
-          - 'dependency': source=software, target=release
-          - 'relationship_AR': source=release, target=software
+          - 'relationship_AR': source=software, target=release
+          - 'dependency': source=release, target=software
         """
         release_to_software: Dict[str, str] = {}
         for src, tgt, attr in self.edges:
             label = attr.get('label')
-            if label == "dependency":
+            if label == "relationship_AR":
                 # software -> release
                 release_to_software[tgt] = src
-            elif label == "relationship_AR":
+            elif label == "dependency":
                 # release -> software
                 release_to_software[src] = tgt
         return release_to_software
@@ -207,7 +207,7 @@ class DepGraph:
         software_releases: Dict[str, List[Tuple[str, int]]] = defaultdict(list)
         for release, software in release_to_software.items():
             node = self.nodes.get(release)
-            if not node:
+            if not node or not self.is_release(node):
                 continue
             ts = self.get_timestamp(node)
             software_releases[software].append((release, ts))

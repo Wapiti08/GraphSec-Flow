@@ -2,6 +2,9 @@
  # @ Create Time: 2025-06-24 16:42:30
  # @ Modified time: 2025-06-24 16:42:32
  # @ Description: temporal centricity calculation for nodes in a graph
+
+the timestamp is one of the attributes of nodes
+
  '''
 import networkx as nx
 from pathlib import Path
@@ -17,60 +20,61 @@ class TempCentricity:
     def __init__(self, graph):
         self.graph = graph
 
-    def _extract_temporal_subgraph(self, t_s, t_e):
+    def _extract_temporal_subgraph(self, t_s: int, t_e: int):
         '''
-        extract the temporal subgraph that only includes nodes and edges
-        active during the time window [t_s, t_e]
+        Keep nodes with t_s <= node.timestamp < t_e, then take induced subgraph.
+
         '''
-        temporal_subgraph = nx.Graph()
-
-        # add edges within the time window
-        for u, v, data in self.graph.edges(data=True):
-            print(u, v, data)
-            if t_s <= data['timestamp'] <= t_e:
-                temporal_subgraph.add_edge(u, v, timestamp=data['timestamp'])
-        
-        # add nodes involved in these edges
-        for node in temporal_subgraph.nodes:
-            if node not in self.graph:
-                temporal_subgraph.add_node(node)
-
-        return temporal_subgraph
+        nodes_in_window = [
+            n for n, d in self.graph.nodes(data=True)
+            if t_s <= int(d.get("timestamp", 0)) < t_e
+        ]
+        # induced subgraph of selected nodes
+        return self.graph.subgraph(nodes_in_window).copy()
 
     def degree_centrality(self, t_s, t_e):
         '''
         compute degree centrality for nodes in the temporal subgraph
         '''
-        temporal_subgraph = self._extract_temporal_subgraph(t_s, t_e)
+        H = self._extract_temporal_subgraph(t_s, t_e)
         degree_centrality = {}
 
-        for node in temporal_subgraph.nodes:
-            degree_centrality[node] = temporal_subgraph.degree(node)
+        # For DiGraph you can choose in/out/total:
+        if H.is_directed():
+            return {
+                "in": nx.in_degree_centrality(H),
+                "out": nx.out_degree_centrality(H),
+                "total": nx.degree_centrality(H.to_undirected())
+            }
+        else:
+            return nx.degree_centrality(H)
         
-        return degree_centrality
-    
+
     def eigenvector_centrality(self, t_s, t_e):
         '''
         compute eigenvector centrality for nodes in the temporal subgraph
         '''
-        temporal_subgraph = self._extract_temporal_subgraph(t_s, t_e)
-        eigenvector_centrality = nx.eigenvector_centrality(temporal_subgraph)
-
-        return eigenvector_centrality
-
+        H = self._extract_temporal_subgraph(t_s, t_e)
+        # Eigenvector for undirected; for directed consider HITS/PageRank
+        if H.is_directed():
+            # Two good directed alternatives:
+            # 1) HITS (hubs/authorities)
+            h, a = nx.hits(H, max_iter=1000, tol=1e-08, normalized=True)
+            return {"hubs": h, "authorities": a}
+            # Or: return nx.pagerank(H)
+        else:
+            return nx.eigenvector_centrality(H, max_iter=1000, tol=1e-06)
 
 if __name__ == "__main__":
     # data path
     small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
-    small_depdata_path = Path.cwd().parent.joinpath("data", "subgraph_2011_4db3bdf6984e454ebb2ce04afb7745d8.graphml")
 
     depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
 
     # load the graph
-    # with small_depdata_path.open('rb') as fr:
-    #     depgraph = pickle.load(fr)
+    with small_depdata_path.open('rb') as fr:
+        depgraph = pickle.load(fr)
 
-    depgraph = nx.read_graphml(small_depdata_path)
     
     # initialize tempcentricity
     tempcent = TempCentricity(depgraph)
