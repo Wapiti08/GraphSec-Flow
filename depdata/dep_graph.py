@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from multiprocessing import Pool, cpu_count
+from multiprocessing import Pool, cpu_count, get_start_method, set_start_method
 from pathlib import Path
 from bisect import bisect_left
 import logging
@@ -39,6 +39,7 @@ def _releases_in_range(software_id: str, start_ts: int, end_ts: int ) -> Iterato
     if not rels:
         return iter(())
     ts_list = _G['soft_ts_lists'][software_id]
+
     i = bisect_left(ts_list, start_ts)
     j = bisect_left(ts_list, end_ts)
     # yield only release ids
@@ -50,53 +51,69 @@ def process_edges_chunk(chunk: List[Tuple[str, str, Dict[str, Any]]]):
         - edges_out: list of (u, v)
         - node_attrs: dict node_id -> {attrs}
     '''
-    nodes      =  _G['nodes']
-    is_release =  _G["is_release"]
-    get_ts     = _G['get_timestamp']
-    time_ranges = _G["time_ranges"]
+    # nodes      =  _G['nodes']
+    # is_release =  _G["is_release"]
+    # get_ts     = _G['get_timestamp']
+    tranges = _G["time_ranges"]
     release_nodes = _G["release_nodes"]
     release_ts   = _G['release_ts']   # precomputed for release ids (fast path)
+    soft_ts_lists = _G['soft_ts_lists']
 
     edges_out: List[Tuple[str, str]] = []
-    node_attrs: Dict[str, Dict[str, Any]] = {}
+    # node_attrs: Dict[str, Dict[str, Any]] = {}
+    used_ids = set()
 
-    def _ensure_attrs(nid: str):
-        if nid not in node_attrs:
-            n = nodes[nid]
-            node_attrs[nid] = {
-                "version": n.get("version", ""),
-                "timestamp": n.get("timestamp", "")
-            }
+    # def _ensure_attrs(nid: str):
+    #     if nid not in node_attrs:
+    #         n = nodes[nid]
+    #         node_attrs[nid] = {
+    #             "version": n.get("version", ""),
+    #             "timestamp": n.get("timestamp", "")
+    #         }
         
     for src, tgt, _ in chunk:
         # only consider release sources
-        src_node = nodes[src]
-        if not is_release(src_node):
+        if src not in release_nodes:
             continue
 
-        src_lo, src_hi = time_ranges.get(src, (0, float('inf')))
+        src_lo, src_hi = tranges.get(src, (0, float('inf')))
 
-        tgt_node = nodes[tgt]
-        # Case A: target is software (not a release) -> connect to its releases in range
-        if not is_release(tgt_node):
-            for rel in _releases_in_range(tgt, src_lo, src_hi):
-                if rel in release_nodes:
-                    edges_out.append((src, rel))
-                    _ensure_attrs(src)
-                    _ensure_attrs(rel)
-        
-        # Case B: target is a release -> direct edge if in rane
+        # case A: target is software => connect to its releases in range
+        # detect "software" as: tgt not in release_nodes
+        if tgt not in release_nodes:
+            # iterate releases via precomputed ts lists
+            ts_list = soft_ts_lists.get(tgt)
+            if not ts_list:
+                continue  
+
+            i = bisect_left(ts_list, src_lo)
+            j = bisect_left(ts_list, src_hi)
+
+            # get the parallel rel IDs lists
+            rels = _G['soft_to_rel'].get(tgt)
+            if not rels:
+                continue
+
+            for k in range(i, j):
+                rel_id = rels[k][0]
+                if rel_id in release_nodes:
+                    edges_out.append((src, rel_id))
+                    used_ids.add(src)
+                    used_ids.add(rel_id)
+
         else:
+            # case B: target is release
             tgt_ts = release_ts.get(tgt)
             if tgt_ts is None:
-                tgt_ts = get_ts(tgt_node)
-                release_ts[tgt] = tgt_ts 
+                continue
+            # check if target is in range
             if src_lo <= tgt_ts < src_hi:
                 edges_out.append((src, tgt))
-                _ensure_attrs(src)
-                _ensure_attrs(tgt)
-    # return edges and node attributes
-    return edges_out, node_attrs
+                used_ids.add(src)
+                used_ids.add(tgt)
+
+    return edges_out, tuple(used_ids)   
+
 
 # --------------------------------------------------------------
 # Main class
@@ -268,6 +285,7 @@ class DepGraph:
         time_ranges: Dict[str, Tuple[int, float]],
         processes: Optional[int] = None,
         progress: bool = True,
+        fixed_chunk_size: int = 10000,  # >>> CHANGED: fixed chunk to avoid materializing edges
 
     ) -> nx.DiGraph:
         ''' build a dependency DiGraph in parallel
@@ -275,6 +293,13 @@ class DepGraph:
         - time_ranges: release_id -> (start_ts, end_ts)
         
         '''
+        # prefer 'fork' when available
+        try:
+            if get_start_method(allow_none=True) != 'fork':
+                set_start_method('fork')
+        except Exception:
+            pass
+
         try:
             from tqdm import tqdm  # lazy import
         except Exception:
@@ -290,25 +315,45 @@ class DepGraph:
         soft_ts_lists = {s: [ts for _, ts in rels] for s, rels in soft_to_rel.items()}
         release_ts = {rid: self.get_timestamp(self.nodes[rid]) for rid in release_nodes_set}
 
-        # materialize edges 
-        fedges = list(filtered_edges)
-        total_edges = len(fedges)
+        # precompute node attrs Once in parent, workers return only IDs
+        attr_base: Dict[str, Dict[str, Any]] = {}
+        # We only need attrs for nodes that might appear in the final graph:
+        maybe_needed_ids = set(release_nodes_set)
+        maybe_needed_ids.update(rel_to_soft_map.keys())
+        maybe_needed_ids.update(rel_to_soft_map.values())
 
-        nproc = processes or cpu_count()
-        factor = 4
-        chunk_size = max(1, total_edges // (nproc * factor)) if total_edges else 1
+        for nid in maybe_needed_ids:
+            n = self.nodes.get(nid)
+            if not n:
+                continue
+            # use compact types
+            ts_val = n.get("timestamp", 0)
+            try:
+                ts_int = int(ts_val)
+            except Exception:
+                ts_int = 0
+            attr_base[nid] = {  
+                "version": n.get("version", ""),
+                "timestamp": ts_int,
+            }
         
-        logger.debug("dep_graph_build_parallel: total_edges=%d nproc=%d chunk_size=%d",
-                total_edges, nproc, chunk_size)
+        nproc = processes or cpu_count()
+        factor = 4  # kept for imap chunksize=1; we chunk at generator level
+
+        logger.debug(
+            "dep_graph_build_parallel: nproc=%d fixed_chunk_size=%d",
+            nproc, fixed_chunk_size
+        )
+
         
         # Pool with globals via initializer
         with Pool(
             processes=nproc,
             initializer = _worker_init,
             initargs=(dict(
-                nodes=self.nodes,
-                is_release=self.is_release,
-                get_timestamp=self.get_timestamp,
+                # nodes=self.nodes,
+                # is_release=self.is_release,
+                # get_timestamp=self.get_timestamp,
                 time_ranges=time_ranges,
                 release_nodes=release_nodes_set,
                 release_ts=release_ts,
@@ -316,30 +361,41 @@ class DepGraph:
                 soft_ts_lists=soft_ts_lists,
             ),),
         ) as pool:
+            
             iterator = pool.imap_unordered(
                 process_edges_chunk,
-                self._chunk_generator(fedges, chunk_size),
+                # avoid list(filtered_edges); stream chunks directly
+                self._chunk_generator(filtered_edges, fixed_chunk_size),
                 chunksize=1,
             )
-            if progress and total_edges:
-                from tqdm import tqdm
-                iterator = tqdm(
-                    iterator,
-                    total=(total_edges + chunk_size - 1) // chunk_size,
-                    desc="Parallel graph build",
-                )
-            results = list(iterator)
 
-        # combine into a single graph (in-memory, no disk roundtrip)
-        combined = nx.DiGraph()
-        for edges_out, attrs in results:
-            if attrs:
-                combined.add_nodes_from((nid, a) for nid, a in attrs.items())
-            if edges_out:
-                combined.add_edges_from(edges_out)
+            if progress:
+                try:
+                    from tqdm import tqdm
+                    iterator = tqdm(
+                        iterator,
+                        desc="Parallel graph build",  # no total -> no materialization
+                    )
+                except Exception:
+                    pass
+
+            # stream-reduce into the final graph (no big results list)
+            combined = nx.DiGraph()
+            seen_nodes: set[str] = set()
+
+            for edges_out, used_ids in iterator:
+                if used_ids:
+                    # add nodes with attrs only once
+                    new_ids = [nid for nid in used_ids if nid not in seen_nodes]
+                    if new_ids:
+                        combined.add_nodes_from(
+                            (nid, attr_base[nid]) for nid in new_ids if nid in attr_base
+                        )
+                        seen_nodes.update(new_ids)
+                    if edges_out:
+                        combined.add_edges_from(edges_out)
         
         return combined
-    
 
     # ------------ save/load --------------
 
