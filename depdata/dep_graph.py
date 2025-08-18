@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import multiprocessing as mp
 from collections import defaultdict
-from multiprocessing import Pool, cpu_count, get_start_method, set_start_method
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 from bisect import bisect_left
 import logging
@@ -17,6 +17,9 @@ import networkx as nx
 import json
 import os
 from typing import Dict, Iterable, Iterator, List, Tuple, Any, Optional
+import tempfile
+import time
+import gc
 
 
 logger = logging.getLogger(__name__)
@@ -30,6 +33,8 @@ def _worker_init(settings):
     resending them with every task.
     '''
     _G.update(settings)
+    # Resolve TMPDIR once per worker (fallback to system tmp)
+    _G['TMPDIR'] = settings.get('TMPDIR') or tempfile.gettempdir()
 
 def _releases_in_range(software_id: str, start_ts: int, end_ts: int ) -> Iterator[str]:
     '''
@@ -59,53 +64,70 @@ def process_edges_chunk(chunk: List[Tuple[str, str, Dict[str, Any]]]):
     release_nodes = _G["release_nodes"]
     release_ts   = _G['release_ts']   # precomputed for release ids (fast path)
     soft_ts_lists = _G['soft_ts_lists']
+    TMPDIR = _G.get('TMPDIR') or tempfile.gettempdir()
 
-    edges_out: List[Tuple[str, str]] = []
-    # node_attrs: Dict[str, Dict[str, Any]] = {}
+    # create a unique temp file for this chunk
+    out_path = os.path.join(
+        TMPDIR, f"dep_graph_chunk_{os.getpid()}_{time.time_ns()}.txt"
+    )
+
     used_ids = set()
-        
-    for src, tgt, _ in chunk:
-        # only consider release sources
-        if src not in release_nodes:
-            continue
+    edges_written = 0
+    
+    opener = open
 
-        src_lo, src_hi = tranges.get(src, (0, float('inf')))
-
-        # case A: target is software => connect to its releases in range
-        # detect "software" as: tgt not in release_nodes
-        if tgt not in release_nodes:
-            # iterate releases via precomputed ts lists
-            ts_list = soft_ts_lists.get(tgt)
-            if not ts_list:
-                continue  
-
-            i = bisect_left(ts_list, src_lo)
-            j = bisect_left(ts_list, src_hi)
-
-            # get the parallel rel IDs lists
-            rels = _G['soft_to_rel'].get(tgt)
-            if not rels:
+    with opener(out_path, "wt") as fw:
+        for src, tgt, _ in chunk:
+            # only consider release sources
+            if src not in release_nodes:
                 continue
 
-            for k in range(i, j):
-                rel_id = rels[k][0]
-                if rel_id in release_nodes:
-                    edges_out.append((src, rel_id))
+            src_lo, src_hi = tranges.get(src, (0, float('inf')))
+
+            # case A: target is software => connect to its releases in range
+            # detect "software" as: tgt not in release_nodes
+            if tgt not in release_nodes:
+                # iterate releases via precomputed ts lists
+                ts_list = soft_ts_lists.get(tgt)
+                if not ts_list:
+                    continue  
+
+                i = bisect_left(ts_list, src_lo)
+                j = bisect_left(ts_list, src_hi)
+
+                # get the parallel rel IDs lists
+                rels = _G['soft_to_rel'].get(tgt)
+                if not rels:
+                    continue
+
+                for k in range(i, j):
+                    rel_id = rels[k][0]
+                    if rel_id in release_nodes:
+                        fw.write(f"{src}\t{rel_id}\n")
+                        edges_written += 1
+                        used_ids.add(src)
+                        used_ids.add(rel_id)
+
+            else:
+                # case B: target is release
+                tgt_ts = release_ts.get(tgt)
+                if tgt_ts is None:
+                    continue
+                # check if target is in range
+                if src_lo <= tgt_ts < src_hi:
+                    fw.write(f"{src}\t{tgt}\n")
+                    edges_written += 1
                     used_ids.add(src)
-                    used_ids.add(rel_id)
+                    used_ids.add(tgt)
 
-        else:
-            # case B: target is release
-            tgt_ts = release_ts.get(tgt)
-            if tgt_ts is None:
-                continue
-            # check if target is in range
-            if src_lo <= tgt_ts < src_hi:
-                edges_out.append((src, tgt))
-                used_ids.add(src)
-                used_ids.add(tgt)
+    # Encourage the worker to drop per-chunk allocations
+    if edges_written == 0:
+        # No edges produced; still return a path (empty file) for simplicity.
+        pass
+    gc.collect()
 
-    return edges_out, tuple(used_ids)   
+    # Return tiny payload over the pipe
+    return (tuple(used_ids), out_path)
 
 
 # --------------------------------------------------------------
@@ -351,7 +373,10 @@ class DepGraph:
                 release_ts=release_ts,
                 soft_to_rel=soft_to_rel,
                 soft_ts_lists=soft_ts_lists,
+                # optional temp directory: "DEPGRAPH_TMP" env var or None
+                TMPDIR=os.environ.get("DEPGRAPH_TMP"),
             ),),
+            maxtasksperchild=100,  # recycle workers to shed leaks
         ) as pool:
             
             iterator = pool.imap_unordered(
@@ -377,7 +402,7 @@ class DepGraph:
 
             for item in iterator:
                 try:
-                    edges_out, used_ids = item
+                    used_ids, out_path = item                    
                     if used_ids:
                         # add nodes with attrs only once
                         new_ids = [nid for nid in used_ids if nid not in seen_nodes]
@@ -386,12 +411,45 @@ class DepGraph:
                                 (nid, attr_base[nid]) for nid in new_ids if nid in attr_base
                             )
                             seen_nodes.update(new_ids)
-                        if edges_out:
-                            combined.add_edges_from(edges_out)
+
+                    # stream edges from the temp file
+                    opener = open
+                    with opener(out_path, 'rt') as fr:
+                        for line in fr:
+                            line = line.rstrip("\n")
+                            if not line:
+                                continue
+                            try:
+                                u, v = line.split("\t", 1)
+                            except ValueError:
+                                continue
+                            combined.add_edge(u, v)
+                            
+                    # remove temp file ASAP to keep disk usage bounded
+                    try:
+                        os.remove(out_path)
+                    except OSError:
+                        pass
+    
+                except MemoryError:
+                    logger.error("Reducer OOM on a result; consider smaller fixed_chunk_size.")
+                    # Best-effort cleanup before bailing
+                    try:
+                        if 'out_path' in locals():
+                            os.remove(out_path)
+                    except OSError:
+                        pass
+                    break
                 except Exception as e:
-                    logger.exception("Reducer failed on a chunk : %r", e)
+                    logger.exception("Reducer failed on a chunk: %r", e)
+                    # Try to delete partial file (if any) and continue
+                    try:
+                        if 'out_path' in locals():
+                            os.remove(out_path)
+                    except OSError:
+                        pass
                     continue
-        
+
         return combined
 
     # ------------ save/load --------------
