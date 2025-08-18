@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import multiprocessing as mp
 from collections import defaultdict
 from multiprocessing import Pool, cpu_count, get_start_method, set_start_method
 from pathlib import Path
@@ -62,14 +63,6 @@ def process_edges_chunk(chunk: List[Tuple[str, str, Dict[str, Any]]]):
     edges_out: List[Tuple[str, str]] = []
     # node_attrs: Dict[str, Dict[str, Any]] = {}
     used_ids = set()
-
-    # def _ensure_attrs(nid: str):
-    #     if nid not in node_attrs:
-    #         n = nodes[nid]
-    #         node_attrs[nid] = {
-    #             "version": n.get("version", ""),
-    #             "timestamp": n.get("timestamp", "")
-    #         }
         
     for src, tgt, _ in chunk:
         # only consider release sources
@@ -293,11 +286,9 @@ class DepGraph:
         - time_ranges: release_id -> (start_ts, end_ts)
         
         '''
-        # prefer 'fork' when available
         try:
-            if get_start_method(allow_none=True) != 'fork':
-                set_start_method('fork')
-        except Exception:
+            mp.set_start_method('spawn', force=True)        
+        except RuntimeError:
             pass
 
         try:
@@ -345,9 +336,10 @@ class DepGraph:
             nproc, fixed_chunk_size
         )
 
+        ctx = mp.get_context('spawn')
         
         # Pool with globals via initializer
-        with Pool(
+        with ctx.Pool(
             processes=nproc,
             initializer = _worker_init,
             initargs=(dict(
@@ -366,7 +358,7 @@ class DepGraph:
                 process_edges_chunk,
                 # avoid list(filtered_edges); stream chunks directly
                 self._chunk_generator(filtered_edges, fixed_chunk_size),
-                chunksize=1,
+                chunksize=16,
             )
 
             if progress:
@@ -383,17 +375,22 @@ class DepGraph:
             combined = nx.DiGraph()
             seen_nodes: set[str] = set()
 
-            for edges_out, used_ids in iterator:
-                if used_ids:
-                    # add nodes with attrs only once
-                    new_ids = [nid for nid in used_ids if nid not in seen_nodes]
-                    if new_ids:
-                        combined.add_nodes_from(
-                            (nid, attr_base[nid]) for nid in new_ids if nid in attr_base
-                        )
-                        seen_nodes.update(new_ids)
-                    if edges_out:
-                        combined.add_edges_from(edges_out)
+            for item in iterator:
+                try:
+                    edges_out, used_ids = item
+                    if used_ids:
+                        # add nodes with attrs only once
+                        new_ids = [nid for nid in used_ids if nid not in seen_nodes]
+                        if new_ids:
+                            combined.add_nodes_from(
+                                (nid, attr_base[nid]) for nid in new_ids if nid in attr_base
+                            )
+                            seen_nodes.update(new_ids)
+                        if edges_out:
+                            combined.add_edges_from(edges_out)
+                except Exception as e:
+                    logger.exception("Reducer failed on a chunk : %r", e)
+                    continue
         
         return combined
 
@@ -424,11 +421,10 @@ if __name__ == "__main__":
         format='%(asctime)s [%(levelname)s]: %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
+
     fh = logging.FileHandler('dep_graph.log')
     fh.setLevel(logging.DEBUG)
-    fh.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-    logger.addHandler(fh)
-
+    logging.getLogger().addHandler(fh)
 
     nodes_edges_path = Path.cwd().parent.joinpath("data", 'graph_nodes_edges.pkl')
     dep_graph_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")

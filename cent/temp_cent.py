@@ -5,6 +5,9 @@
 
 the timestamp is one of the attributes of nodes
 
+
+
+
  '''
 import networkx as nx
 from pathlib import Path
@@ -57,11 +60,7 @@ class TempCentricity:
         H = self._extract_temporal_subgraph(t_s, t_e)
         # Eigenvector for undirected; for directed consider HITS/PageRank
         if H.is_directed():
-            # Two good directed alternatives:
-            # 1) HITS (hubs/authorities)
-            h, a = nx.hits(H, max_iter=1000, tol=1e-08, normalized=True)
-            return {"hubs": h, "authorities": a}
-            # Or: return nx.pagerank(H)
+            return nx.pagerank(H)
         else:
             return nx.eigenvector_centrality(H, max_iter=1000, tol=1e-06)
 
@@ -74,13 +73,14 @@ if __name__ == "__main__":
     # load the graph
     with small_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
-
     
+
     # initialize tempcentricity
     tempcent = TempCentricity(depgraph)
 
     # calculate degree centrality in the time window
-    t_s, t_e = 0, 10
+    t_s, t_e = 100, 300
+
     degree_cent = tempcent.degree_centrality(t_s, t_e)
     print("degree centrality:", degree_cent)
     eigen_cent = tempcent.eigenvector_centrality(t_s, t_e)

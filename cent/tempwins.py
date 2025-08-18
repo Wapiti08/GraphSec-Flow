@@ -43,7 +43,7 @@ class TempWinSelect:
             pad = k // 2
             x = np.pad(self.centrality, (pad, pad), mode='edge')
             kernel = np.ones(k) / k
-            self.centrality_scores = np.convolve(x, kernel, mode='valid')
+            self.centrality = np.convolve(x, kernel, mode='valid')
         
     
     def detect_sign_changes(self, prominence=0.01, use_abs_gradient=True,  distance=None):
@@ -64,22 +64,8 @@ class TempWinSelect:
 
         peaks, _ = find_peaks(y, prominence=prominence, distance=distance)
 
-        return peaks.list()
-        
-    
-    def select_time_windows(self, threshold=0.1):
-        """
-        Detect significant changes in centrality scores using peak detection.
-        
-        Args:
-            threshold (float): Minimum height of peaks to be considered significant.
-        
-        Returns:
-            list: Indices of significant change points.
-        """
-        peaks, _ = find_peaks(self.centrality_scores, height=threshold)
         return peaks.tolist()
-    
+        
     def select_time_windows(self, start_time=None, end_time=None,
                             prominence=0.01, distance=None, include_boundaries=True):
         '''
@@ -138,6 +124,36 @@ class TempWinSelect:
                     "peak_indices": local_peaks
                 }))
         return windows
+
+# -------------- aggregator of individual nodes to global centrality scores --------------
+def agg_network_influence(pr_scores: dict, method="topk_mean", k =5):
+    # create a new 1-dimensional array from an iterable object
+    vals = np.fromiter(pr_scores.values(), dtype=float)
+    if vals.size == 0:
+        return 0.0
+    
+    if method == "topk_mean":
+        k = max(1, min(k, vals.size))
+        # sort starts from smallest, so take the last k elements
+        return float(np.mean(np.sort(vals)[-k:]))
+    
+    if method == "max":
+        return float(np.max(vals))
+    
+    if method == "mean":
+        return float(np.mean(vals))
+
+    # demonstrate the centrality degree
+    if method == "gini":
+        x = np.sort(vals)
+        n = x.size
+        if n == 0: return 0.0
+        # Return the cumulative sum
+        cum = np.cumsum(x)
+        gini = (n + 1 - 2 * np.sum(cum) / cum[-1]) / n if cum[-1] > 0 else 0.0
+        return float(max(0.0, gini))
+
+
 
 
 if __name__ == "__main__":
