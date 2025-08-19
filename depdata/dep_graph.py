@@ -10,7 +10,7 @@ import multiprocessing as mp
 from collections import defaultdict
 from multiprocessing import Pool, cpu_count
 from pathlib import Path
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 import logging
 import pickle
 import networkx as nx
@@ -57,14 +57,16 @@ def process_edges_chunk(chunk: List[Tuple[str, str, Dict[str, Any]]]):
         - edges_out: list of (u, v)
         - node_attrs: dict node_id -> {attrs}
     '''
-    # nodes      =  _G['nodes']
-    # is_release =  _G["is_release"]
-    # get_ts     = _G['get_timestamp']
     tranges = _G["time_ranges"]
     release_nodes = _G["release_nodes"]
     release_ts   = _G['release_ts']   # precomputed for release ids (fast path)
     soft_ts_lists = _G['soft_ts_lists']
+    soft_to_rel   = _G['soft_to_rel']
     TMPDIR = _G.get('TMPDIR') or tempfile.gettempdir()
+
+    strategy = _G.get('strategy', 'nearest_past')
+    adoption_lag_seconds = int(_G.get('adoption_lag_seconds', 0) or 0)
+    allow_forward_fill = bool(_G.get('allow_forward_fill', False))
 
     # create a unique temp file for this chunk
     out_path = os.path.join(
@@ -74,51 +76,89 @@ def process_edges_chunk(chunk: List[Tuple[str, str, Dict[str, Any]]]):
     used_ids = set()
     edges_written = 0
     
-    opener = open
-
-    with opener(out_path, "wt") as fw:
+    with open(out_path, "wt") as fw:
         for src, tgt, _ in chunk:
-            # only consider release sources
+            # normalize: only process if src is a release
             if src not in release_nodes:
+                # If input wasn’t normalized for some reason, swap (software->release)
+                if tgt in release_nodes:
+                    src, tgt = tgt, src
+                else:
+                    continue
+
+            src_ts = release_ts.get(src)
+            if src_ts is None:
                 continue
 
-            src_lo, src_hi = tranges.get(src, (0, float('inf')))
-
-            # case A: target is software => connect to its releases in range
-            # detect "software" as: tgt not in release_nodes
+            # If target is software: choose the upstream release according to the strategy
             if tgt not in release_nodes:
                 # iterate releases via precomputed ts lists
                 ts_list = soft_ts_lists.get(tgt)
                 if not ts_list:
                     continue  
-
-                i = bisect_left(ts_list, src_lo)
-                j = bisect_left(ts_list, src_hi)
-
-                # get the parallel rel IDs lists
+                
                 rels = _G['soft_to_rel'].get(tgt)
                 if not rels:
                     continue
 
-                for k in range(i, j):
-                    rel_id = rels[k][0]
-                    if rel_id in release_nodes:
-                        fw.write(f"{src}\t{rel_id}\n")
-                        edges_written += 1
-                        used_ids.add(src)
-                        used_ids.add(rel_id)
+                if strategy == "nearest_past":
+                    # enforce technical lag: only versions released at or before (src_ts - lag)
+                    cutoff = src_ts - adoption_lag_seconds
+                    idx = bisect_right(ts_list, cutoff) - 1
+                    if idx >= 0:
+                        rel_id = rels[idx][0]
+                        if rel_id in release_nodes:
+                            fw.write(f"{src}\t{rel_id}\n")
+                            edges_written += 1
+                            used_ids.add(src)
+                            used_ids.add(rel_id)
+                    elif allow_forward_fill:
+                        # pick the first future release after cutoff
+                        idx2 = bisect_left(ts_list, cutoff)
+                        if 0 <= idx2 < len(ts_list):
+                            rel_id = rels[idx2][0]
+                            if rel_id in release_nodes:
+                                fw.write(f"{src}\t{rel_id}\n")
+                                edges_written += 1
+                                used_ids.add(src)
+                                used_ids.add(rel_id)
+
+                else:
+                    # fallback to window-intersection behaviour
+                    src_lo, src_hi = tranges.get(src, (0, float('inf')))
+                    i = bisect_left(ts_list, src_lo)
+                    j = bisect_left(ts_list, src_hi)
+                    for k in range(i, j):
+                        rel_id = rels[k][0]
+                        if rel_id in release_nodes:
+                            fw.write(f"{src}\t{rel_id}\n")
+                            edges_written += 1
+                            used_ids.add(src)
+                            used_ids.add(rel_id)
 
             else:
-                # case B: target is release
+                # target is a release: only keep edges that respect technical lag (if any)
                 tgt_ts = release_ts.get(tgt)
                 if tgt_ts is None:
                     continue
-                # check if target is in range
-                if src_lo <= tgt_ts < src_hi:
-                    fw.write(f"{src}\t{tgt}\n")
-                    edges_written += 1
-                    used_ids.add(src)
-                    used_ids.add(tgt)
+
+                if strategy == "nearest_past":
+                    # accept only if tgt release does not violate adoption lag
+                    if tgt_ts <= src_ts - adoption_lag_seconds:
+                        fw.write(f"{src}\t{tgt}\n")
+                        edges_written += 1
+                        used_ids.add(src)
+                        used_ids.add(tgt)
+
+                else:
+                    src_lo, src_hi = tranges.get(src, (0, float('inf')))
+                    # check if target is in range
+                    if src_lo <= tgt_ts < src_hi:
+                        fw.write(f"{src}\t{tgt}\n")
+                        edges_written += 1
+                        used_ids.add(src)
+                        used_ids.add(tgt)
+
 
     # Encourage the worker to drop per-chunk allocations
     if edges_written == 0:
@@ -244,7 +284,7 @@ class DepGraph:
             ts = self.get_timestamp(node)
             software_releases[software].append((release, ts))
         for s, rels in software_releases.items():
-            rels.sort(key=lambda x: x[1])
+            rels.sort(key=lambda x: (x[1], x[0]))  # (timestamp, release_id)
         return software_releases
     
     def time_ranges(self, software_to_release: Dict[str, List[Tuple[str, int]]]
@@ -266,15 +306,17 @@ class DepGraph:
     
     def filter_edges(self) -> Iterator[Tuple[str, str, Dict[str, Any]]]:
         """
-        Yield only edges we care about (dependency and relationship_AR),
+        Yield edges normalized so that the SOURCE is always a release:
         preserving original direction:
           - dependency: software -> release
           - relationship_AR: release  -> software
         """
         for src, tgt, attr in self.edges:
             label = attr.get('label')
-            if label in {'dependency', 'relationship_AR'}:
+            if label == 'dependency':
                 yield (src, tgt, attr)
+            elif label == 'relationship_AR':
+                yield (tgt, src, attr)
     
     # ---------------------- Chunking ----------------------
     
@@ -301,7 +343,10 @@ class DepGraph:
         processes: Optional[int] = None,
         progress: bool = True,
         fixed_chunk_size: int = 10000,  # >>> CHANGED: fixed chunk to avoid materializing edges
-
+        # --- NEW: strategy knobs ---
+        strategy: str = "nearest_past",   # {"nearest_past", "window"}
+        adoption_lag_seconds: int = 0,    # e.g., 7*24*3600 to enforce a 7-day lag
+        allow_forward_fill: bool = False, # if no past release exists, optionally pick the first future one
     ) -> nx.DiGraph:
         ''' build a dependency DiGraph in parallel
         - filtered_edges: iterable of (src, tgt, attr) from self.filter_edges()
@@ -375,6 +420,10 @@ class DepGraph:
                 soft_ts_lists=soft_ts_lists,
                 # optional temp directory: "DEPGRAPH_TMP" env var or None
                 TMPDIR=os.environ.get("DEPGRAPH_TMP"),
+                # --- pass strategy knobs ---
+                strategy=strategy,
+                adoption_lag_seconds=adoption_lag_seconds,
+                allow_forward_fill=allow_forward_fill,
             ),),
             maxtasksperchild=100,  # recycle workers to shed leaks
         ) as pool:
@@ -489,12 +538,57 @@ if __name__ == "__main__":
 
     nodes, edges = load_data(nodes_edges_path)
     dg = DepGraph(nodes, edges)
+
     # Build mappings & ranges
     rel2soft = dg.rel_to_soft()
     soft2rel = dg.soft_to_rel(rel2soft)
     tranges = dg.time_ranges(soft2rel)
-    # Filter edges and build combined graph
+
+    # 1) Normalize + filter edges (your refactored filter flips relationship_AR)
     filt = dg.filter_edges()
-    G = dg.dep_graph_build_parallel(filt, tranges)
-    # Save
+
+    # 2) Build graph using TECHNICAL-LAG (nearest-past) strategy
+    ADOPTION_LAG_SECONDS = 0         # e.g., 7*24*3600 for a 7-day minimum lag
+    FORWARD_FILL = False             # True only if you want to snap to the first future release when no past exists
+
+    logging.info("Building technical-lag (nearest-past) dependency graph...")
+    G = dg.dep_graph_build_parallel(
+        filtered_edges=filt,
+        time_ranges=tranges,
+        processes=os.cpu_count(),
+        progress=True,
+        fixed_chunk_size=10000,
+        strategy="nearest_past",
+        adoption_lag_seconds=ADOPTION_LAG_SECONDS,
+        allow_forward_fill=FORWARD_FILL,
+        )
+
+    # ---------------- Basic sanity checks ----------------
+    rel_ids_set = set(dg.get_releases().keys())
+
+    # (a) Graph should contain only releases
+    only_releases = all(n in rel_ids_set for n in G.nodes)
+    if not only_releases:
+        bad = [n for n in G.nodes if n not in rel_ids_set][:10]
+        logging.warning("Found non-release nodes in G (sample): %r", bad)
+    else:
+        logging.info("All %d nodes in G are release nodes.", G.number_of_nodes())
+
+    # (b) Technical-lag causality: ts(target) <= ts(source) - Δ (if Δ>0)
+    if ADOPTION_LAG_SECONDS > 0:
+        violations = 0
+        for u, v in G.edges:
+            ts_u = G.nodes[u].get("timestamp", 0)
+            ts_v = G.nodes[v].get("timestamp", 0)
+            if ts_v > ts_u - ADOPTION_LAG_SECONDS:
+                violations += 1
+        if violations:
+            logging.warning("Lag causality violations detected: %d", violations)
+        else:
+            logging.info("No lag causality violations for Δ=%d seconds.", ADOPTION_LAG_SECONDS)
+
+    logging.info("Technical-lag graph: |V|=%d, |E|=%d", G.number_of_nodes(), G.number_of_edges())
+
+    # ---------------- Save ----------------
     dg.graph_save(G, dep_graph_path)
+    logging.info("Saved technical-lag graph to %s", dep_graph_path)

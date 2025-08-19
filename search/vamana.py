@@ -11,10 +11,9 @@ class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
 
     attributes:
-        M: maximum number of edges per node
-        ef_construction: size of the dynamic candidate list during construction
         data: list of vector (numpy arrays) 
         graph: adjacency list mapping node indicies to list of neighbor indices
+        entry_point: the entrypoint of graph
     """
     def __init__(self, M=5, ef_construction=100):
         self.M = M
@@ -100,6 +99,9 @@ class VamanaSearch:
 
         # extract k best from topk
         result = [idx for _, idx in heapq.nsmallest(k, topk)]
+        # if topk is not enough, fill current
+        if not result:
+            result = [current]
         return result
 
     def add_point(self, vector):
@@ -117,7 +119,7 @@ class VamanaSearch:
         if self.entry_point is None:
             # first point
             self.entry_points = idx
-            return
+            return idx
         
         # 1. Search for candidates using a best-first search
         candidates = self.search(vector, k = self.ef_construction)
@@ -133,8 +135,4 @@ class VamanaSearch:
             self.graph[n].append(idx)
 
 if __name__ == "__main__":
-
-    v = VamanaSearch(M=8, ef_construction=200)
-    for vec in dataset:
-        v.add_point(vec)
-    neighbors = v.search(query_vector, k=5)
+    

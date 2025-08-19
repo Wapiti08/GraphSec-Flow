@@ -78,3 +78,10 @@ class VLWithTempCent:
         
         return root_cause_community, root_cause_node
 
+
+if __name__ == "__main__":
+    # data path
+    small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
+    # depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
+
+    
