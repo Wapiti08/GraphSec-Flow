@@ -3,8 +3,13 @@
  # @ Modified time: 2025-06-24 12:01:28
  # @ Description: greedy search from the closest neighbors to a specified point in graph p
  '''
+import sys
+from pathlib import Path
+sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 import numpy as np
 import heapq
+from cve.cvevector import CVEVector
+import networkx as nx
 
 
 class VamanaSearch:
@@ -68,7 +73,6 @@ class VamanaSearch:
         # greedy search to reach a local minima
         while improved:
             improved = False
-            
             for neighbor in self.graph[current]:    
                 d = self._distance(query, self.data[neighbor])
                 if d < curr_dist:
@@ -125,14 +129,47 @@ class VamanaSearch:
         candidates = self.search(vector, k = self.ef_construction)
         # build list of (distance, idx)
         dist_candidates = [(self._distance(vector, self.data[i]), i) for i in candidates]
-
         # 2. Prune candidates to M best neighbors
         neighbors = self._select_neighbors(dist_candidates, self.M)
-
         # 3. Link new node with chosen neighbors
         for n in neighbors:
             self.graph[idx].append(n)
             self.graph[n].append(idx)
+        
+        return idx
 
-if __name__ == "__main__":
     
+class VamanaOnCVE:
+    '''
+    put "small volume of nodes with CVE" inside Vamana ANN:
+
+    - put only nodes with cve inside ANN
+    - provide .search to return node ids
+    - expose .dep_graph for community detection
+
+    '''
+    def __init__(self, dep_graph: nx.Graph, nodeid_to_text: dict, embedder: CVEVector,
+                 m=8, ef_construction=100):
+        self.dep_graph = dep_graph
+        self.embedder = embedder
+        self.ann = VamanaSearch(M=m, ef_construction=ef_construction)
+
+        # build two reflection
+        self.ann_to_node = {}
+        self.node_to_ann = {}
+
+        # build index 
+        for node_id, text in nodeid_to_text.items():
+            vec = self.embedder.encode(text)
+            ann_idx = self.ann.add_point(vec)
+            self.ann_to_node[ann_idx] = node_id
+            self.node_to_ann[node_id] = ann_idx
+        
+    def search(self, query_vec, k = 10):
+        '''
+        input: query_vec (np.na)
+        output: k dependent graph node_id
+        '''
+        nn_ann_idx = self.ann.search(query_vec, k = k)
+        return [self.ann_to_node[i] for i in nn_ann_idx if i in self.ann_to_node]
+
