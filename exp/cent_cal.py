@@ -89,7 +89,6 @@ if __name__ == "__main__":
         logger.info(f"Time spent for node loading from graphml is: {datetime.now() - now}")
     #     save_data(nodes, edges, graph_path)
 
-
     # ------ calculate the degree_centrality ------
     # top_degree_cel = degree_cent.cal_degree_centrality(nodes, edges)
     # addvalue_edges_dict = degree_cent.get_addvalue_edges(edges)
@@ -100,8 +99,6 @@ if __name__ == "__main__":
     # top_degree_cel = degree_cent.cal_degree_release_with_cve(nodes, edges, addvalue_edges_dict)
     # logger.info(f"the top 10 nodes with highest degree centrality are: {top_degree_cel}")
     # logger.info(f"the top 10 node ids with highest degree centrality are: {match_top_nodes_to_ids(top_degree_cel, nodes)}")
-    
-    
     # # ------ calculate the between_centrailty --------
     # print("the length of nodes is:", len(list(nodes.keys())))
     # print("the length of edges is:", len(edges))
@@ -128,16 +125,15 @@ if __name__ == "__main__":
     eigencenter = eigen_cent.EigenCent(nodes, edges, att_features, sever_score_map)
     # generate addvalues nodes
     # process node attribute values to right format
-    eigencenter._quan_attrs()
-
-    # check whether feature matrix has been generated before
+    # eigencenter._quan_attrs()
     fea_matrix_path = Path.cwd().parent.joinpath("data", "fea_matrix.csv")
+
     eigencenter._covt_df(fea_matrix_path)
     
-    eigencenter._step_wise_reg(0.05, att_features)
+    # eigencenter._step_wise_reg(0.05, att_features)
     # analyse processed attributes
-    # eigencenter._weight_ana()
-    eigencenter.ave_weight()
+    eigencenter._weight_ana()
+    # eigencenter.ave_weight()
 
     # get the eigen centrality
     top_eigen_nodes = eigencenter.cal_weighted_eigen_cent_nx()
