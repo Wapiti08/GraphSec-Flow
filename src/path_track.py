@@ -47,9 +47,109 @@ from utils.util import _detect_graph_nodes_and_edges, to_undirected_graph
 
 # --------- build temporal graph ----------
 def build_temporal_digraph(
-        
-    )
+      G_undirected: nx.Graph,
+      strict_increase: bool=False,
+      t_start: Optional[float] = None,
+      t_end: Optional[float] = None
+    ) -> nx.DiGraph:
+    ''' build a temporal directed graph (DAG) from an undirected dependency graph
+    
+    Each node must carry a numeric 'timestamp' attribute. For any undirected
+      edge {u, v}, we add directed edges according to timestamps:
+    '''
+    if t_start is None: t_start = float('-inf')
+    if t_end is None: t_end = float('inf')
 
+    # filter nodes by timestamp presence + range
+    allowed = []
+    for n, d in G_undirected.nodes(data=True):
+        if 'timestamp' in d:
+            ts = d['timestamp']
+            if t_start <= ts <= t_end:
+                allowed.append(n)
 
+    D = nx.DiGraph()
+    for n in allowed:
+        D.add_node(n, **G_undirected.nodes[n])
+      
+    for u, v in G_undirected.subgraph(allowed).edges():
+        tsu = G_undirected.nodes[u].get("timestamp")
+        tsv = G_undirected.nodes[v].get('timestamp')
+
+        if tsu is None or tsv is None:
+            continue
+        if strict_increase:
+            if tsu < tsv: D.add_edge(u, v, time_lag = tsv - tsu)
+            if tsv < tsu: D.add_edge(v, u, time_lag = tsu - tsv)
+        else:
+            if tsu <= tsv: D.add_edge(u, v, time_lag = tsv - tsu)
+            if tsv <= tsu: D.add_edge(v ,u, time_lag = tsu - tsv)
+    
+    return D
+
+# ----------------- Scoring -----------------
+SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
+
+def node_severity_score(attrs: Mapping[str, Any]) -> float:
+    '''
+      Compute a severity-based score for a node from its CVE attributes.
+
+        The score sums weights for each CVE on the node using SEV_WEIGHT,
+        then adds a small bonus proportional to the total CVE count.
+    '''
+    cves = attrs.get('cve_list', [])
+    if not cves:
+        return 0.0
+    score = 0.0
+    for c in cves:
+        sev = str(c.get('severity', '')).upper()
+        score += SEV_WEIGHT.get(sev, 0)
+    if score == 0.0:
+        score = float(attrs.get('cve_count', 0))
+        score += 0.2 * float(attrs.get('cve_count', 0))
+    
+    return score
+
+def build_node_scores(D: nx.DiGraph,
+                      similarity_scores: Optional[Mapping[str, float]] = None,
+                      blend_lambda: float = 0.7
+                      ) -> Dict[str, float]:
+    '''
+    calculate the node score combining cve score and similarity score 
+
+    '''
+    scores = {}
+    for n in D.nodes:
+        sev = node_severity_score(D.nodes[n])
+        if similarity_scores is not None and n in similarity_scores:
+            sim = float(similarity_scores[n])
+            scores[n] = blend_lambda * sim + (1-blend_lambda) * sev
+        else:
+            scores[n] = sev
+    return scores
+
+def attach_edge_weights(
+        D: nx.DiGraph,
+        alpha: float,
+        beta: float,
+        gamma: float,
+        centrality: Optional[Mapping[str, float]] = None,
+        node_scores: Optional[Mapping[str, float]] = None,
+        eps: float = 1e-6
+      ) -> None:
+    ''' Compute and attach 'weight' on each edge using the model:
+    w(u->v) = alpha * time_lag(u,v) + beta * 1/(centrality[v]+eps) + gamma * 1/(node_scores[v]+eps)
+
+    args:
+      D: temporal graph with edge attribute 'time_lag' (float)
+      alpha: weight for time lag (larger alpha penalizes long lags more)
+      beta: weight for inverse centrality of the target node v
+      gamma: weight for inverse node score of v (set 0 to disable). A larger node
+        score reduces the penalty, making v more attractive on a path
+      centrality: Node centrality scores (e.g., degree_centrality). Required if beta != 0.
+      node_scores: 
+
+    '''
+    
 
 
