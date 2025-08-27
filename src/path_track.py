@@ -147,9 +147,76 @@ def attach_edge_weights(
       gamma: weight for inverse node score of v (set 0 to disable). A larger node
         score reduces the penalty, making v more attractive on a path
       centrality: Node centrality scores (e.g., degree_centrality). Required if beta != 0.
-      node_scores: 
+      node_scores: node-level scores from severity/similarity, required if gamma !=0
+      eps: small constant to avoid division by zero
 
     '''
+    for u, v, d in D.edges(data=True):
+        w = alpha * float(d.get('time_lag', 0.0))
+        if beta and centrality is not None:
+            w += beta * (1.0 / (float(centrality.get(v, 0.0)) + eps))
+        if gamma and node_scores is not None:
+            w += gamma * (1.0 / (float(node_scores.get(v, 0.0)) + eps))
+        d['weight'] = w
+
+
+# ------------- Paths & summaries ------------
+
+def k_shortest_paths(D: nx.DiGraph, source: str, 
+                     targets: Iterable[str], k: int = 3) -> Dict[str, List[List[str]]]:
+    '''
+    compute up to K shortest simple paths (by 'weight') from source to each target
     
+    args:
+      D: temporal graph whose edges carry a 'weight' attribute
+      source: starting node id
+      targets: target node ids to search paths to
+      k: number of shortest paths per target to return
 
+    '''
+    out: Dict[str, List[List[str]]] = {}
+    for t in targets:
+        if t == source or t not in D or source not in D:
+            continue
+        try:
+            gen = nx.shortest_simple_paths(D, source, t, weight='weight')
+            paths = []
+            for i, p in enumerate(gen):
+                if i > k: break
+                paths.append(p)
+            if paths:
+                out[t] = paths
+        except (nx.NetworkXNoPath, nx.NodeNotFound):
+                pass
+        return out
 
+def severity_rank(sev: Optional[str]) -> int:
+    ''' convert severity string to an integer rank for comparisons
+    
+    '''
+    if not sev: return 0
+    return {'LOW':1,'MODERATE':2,'MEDIUM':2,'HIGH':3,'CRITICAL':4}.get(str(sev).upper(), 0)
+
+def summarize_path(D: nx.DiGraph, path: List[str]) -> dict:
+    ''' Summarize a path by length, total CVE count on nodes, and maximum severity on nodes.
+    
+    '''
+    total_cves = 0
+    max_sev_rank = 0
+    for n in path:
+        attrs = D.nodes[n]
+        total_cves += int(attrs.get('cve_count', 0))
+        for c in attrs.get('cve_list', []):
+            max_sev_rank = max(max_sev_rank, severity_rank(c.get('severity')))
+    max_sev = None
+    if max_sev_rank > 0:
+        rev = {1:'LOW', 2:'MODERATE', 3:'HIGH', 4:'CRITICAL'}
+        max_sev = rev[max_sev_rank]
+    return {
+        'length': len(path),
+        'total_cves': total_cves,
+        'max_severity': max_sev
+        }
+
+def main():
+    
