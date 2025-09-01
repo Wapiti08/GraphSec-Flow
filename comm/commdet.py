@@ -106,40 +106,6 @@ class VLWithTempCent:
         return root_comm, root_node
 
 
-
-        # step4:  Identify the root cause by considering both community structure and node properties
-        # - Find the community with the most critical CVE and earliest timestamp
-
-        community_sizes = {community: list(communities.values()).count(community) for \
-                            community in set(communities.values())}
-        
-        # step5: score communities based on centrality, CVE, and timestamp
-        root_cause_community = None
-        max_score = -float('inf')
-
-        for community, nodes in temp_subgraph.nodes.items():
-            community_cves = [self.cve_data[n] for n in nodes]
-            community_timestamps = [self.timestamps[n] for n in nodes]
-
-            # calculate score for each community 
-            centrality_scores = self.centrality.eigenvector_centrality(t_s, t_e)
-            community_score = sum(centrality_scores.get(node, 0) for node in nodes) + \
-                            sum(community_cves) - min(community_timestamps)
-
-            # update root cause community if this one has a higher score
-            if community_score > max_score:
-                max_score = community_score
-                root_cause_community = community
-            
-        # step 6: Identify the node within the root cause community with the highest centrality
-        root_cause_node = max(
-            [node for node, comm in communities.items() if comm == root_cause_community],
-            key=lambda x: (self.cve_data.get(x, 0), self.timestamps.get(x, float('inf')), self.centrality.eigenvector_centrality(t_s, t_e).get(x, 0))
-        )
-        
-        return root_cause_community, root_cause_node
-
-
 if __name__ == "__main__":
     # data path
     small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")

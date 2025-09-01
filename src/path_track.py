@@ -39,7 +39,7 @@ import pickle
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import networkx as nx
-from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_pickle
+from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_pickle, _safe_save_json
 from utils.util import _detect_graph_nodes_and_edges, to_undirected_graph
 
 
@@ -288,9 +288,9 @@ def main():
     ap.add_argument('--k', type='int', default=3, help ='Top-k paths per target')
     ap.add_argument('--alpha', type=float, default=1.0, help='Weight for time lag')
     ap.add_argument('--beta', type=float, default=0.0, help='Weight for centrality inverse')
-    ap.add_argument('--gamma', type=float, default=1.0, help='Weight for node score inverse')
+    ap.add_argument('--gamma', type=float, default=0.0, help='Weight for node score inverse')
     ap.add_argument('--blend-lambda', type=float, default=0.7, help='Blend sim vs severity (if similarity-json provided)')
-    ap.add_argument('--similarity-json', help='Optional node_id -> similarity score JSON')
+    ap.add_argument('--similarity-json', default=None, help='Optional node_id -> similarity score JSON')
     ap.add_argument('--t-start', type=float, help='Timestamp lower bound (inclusive)')
     ap.add_argument('--t-end', type=float, help="Timestamp upper bound (inclusive)")
     ap.add_argument("--strict-increase", action='store_true', help='Require strictly increasing timestamps')

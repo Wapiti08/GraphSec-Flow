@@ -122,7 +122,7 @@ class VamanaSearch:
 
         if self.entry_point is None:
             # first point
-            self.entry_points = idx
+            self.entry_point = idx
             return idx
         
         # 1. Search for candidates using a best-first search
