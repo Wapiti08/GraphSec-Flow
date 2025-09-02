@@ -27,7 +27,7 @@ class VamanaSearch:
         self.graph = {}
         self.entry_point = None  # index of the graph entry point
 
-    def _distance(self, a,b):
+    def _distance(self, a, b):
         ''' compute Eudlidean distance between two vectors a and b
         
         '''
@@ -173,3 +173,5 @@ class VamanaOnCVE:
         nn_ann_idx = self.ann.search(query_vec, k = k)
         return [self.ann_to_node[i] for i in nn_ann_idx if i in self.ann_to_node]
 
+
+if __name__ =="__main__":

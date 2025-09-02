@@ -44,16 +44,16 @@ if __name__ == "__main__":
     osv_id = "OSV-2020-111"
     package = "org.jenkins-ci.main:cli:1.591"
     cwe_id = "CWE-20"
-    # cve_data = nvd_cve_api(cve_id)
-    # print("---- NVD CVE API ----")
-    # print(cve_data)
-    cwe_data = nvd_cwe_api(cwe_id)
-    print("---- NVD CWE API ----")
-    print(cwe_data)
-    # packages = ["faker", "cache", "1cggeydu", "FfiHelper"]
-    cve_data = mitre_cve_api(package)
-    print("---- MITRE CVE API ----")
+    cve_data = nvd_cve_api(cve_id)
+    print("---- NVD CVE API ----")
     print(cve_data)
-    # cve_data = osv_cve_api(cve_id)
-    # print("----- OSV CVE API ----")
+    # cwe_data = nvd_cwe_api(cwe_id)
+    # print("---- NVD CWE API ----")
+    # print(cwe_data)
+    # packages = ["faker", "cache", "1cggeydu", "FfiHelper"]
+    # cve_data = mitre_cve_api(package)
+    # print("---- MITRE CVE API ----")
     # print(cve_data)
+    cve_data = osv_cve_api(cve_id)
+    print("----- OSV CVE API ----")
+    print(cve_data)

@@ -7,6 +7,7 @@
 
 from typing import List, Optional, Union
 import numpy as np
+from cveinfo import osv_cve_api
 
 class CVEVector:
     '''
@@ -77,4 +78,12 @@ class CVEVector:
         return [embs[i] for i in range(embs.shape[0])]
     
     
-    
+if __name__ == "__main__":
+
+    # get one instance of CVE instance
+    cve_id = "CVE-2016-9910"
+    cve_data = osv_cve_api(cve_id)
+
+    cvevector = CVEVector()
+    emb = cvevector.encode(cve_data["details"]) 
+    print(f"the embedded description of {cve_id} is {emb}")
