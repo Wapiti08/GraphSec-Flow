@@ -4,10 +4,12 @@
  # @ Description: vector the description of CVE vulnerabilities
  '''
 
-
+import sys
+from pathlib import Path
+sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 from typing import List, Optional, Union
 import numpy as np
-from cveinfo import osv_cve_api
+from cve.cveinfo import osv_cve_api
 
 class CVEVector:
     '''
@@ -82,8 +84,12 @@ if __name__ == "__main__":
 
     # get one instance of CVE instance
     cve_id = "CVE-2016-9910"
+    cve_id_1 = "CVE-2024-55591"
     cve_data = osv_cve_api(cve_id)
+    cve_data_1 = osv_cve_api(cve_id_1)
 
     cvevector = CVEVector()
     emb = cvevector.encode(cve_data["details"]) 
     print(f"the embedded description of {cve_id} is {emb}")
+    emb_1 = cvevector.encode(cve_data["details"])
+    print(f"the embedded description of {cve_id_1} is {emb_1}")

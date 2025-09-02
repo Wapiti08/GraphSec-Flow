@@ -10,7 +10,8 @@ import numpy as np
 import heapq
 from cve.cvevector import CVEVector
 import networkx as nx
-
+from cve import cveinfo
+from cve.cveinfo import osv_cve_api
 
 class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
@@ -175,3 +176,28 @@ class VamanaOnCVE:
 
 
 if __name__ =="__main__":
+    # testing vamana search:
+    vamanasearch = VamanaSearch()
+
+    # include three groups of CVEs: log4shell, spectre, shellshock
+    cve_ids = ["CVE-2021-44228", 'CVE-2021-45046', 'CVE-2021-45105', 'CVE-2021-4104',
+               'CVE-2017-5753', "CVE-2017-5715", "CVE-2017-5754",
+               "CVE-2014-6271", "CVE-2014-7169", "CVE-2014-7186"]
+
+    cve_data_list = [osv_cve_api(cve_id) for cve_id in cve_ids]
+
+    cvevector = CVEVector()
+    emb_list = [cvevector.encode(cve_data["details"]) for cve_data in cve_data_list] 
+
+
+    # get the distance of two vectors
+    dist_vec_list = [vamanasearch._distance(emb_list[i], emb_list[i+1]) for i, _ in enumerate(emb_list) if i< len(emb_list)-1]
+    print(f"the distance is {dist_vec_list}")
+
+    # add vector to graph
+    for vec in emb_list:
+        print(vamanasearch.add_point(vec))
+    
+    dep_graph = vamanasearch.graph
+    # testing VamanaOnCVE
+    
