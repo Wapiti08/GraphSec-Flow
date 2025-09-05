@@ -198,6 +198,14 @@ if __name__ =="__main__":
     for vec in emb_list:
         print(vamanasearch.add_point(vec))
     
-    dep_graph = vamanasearch.graph
     # testing VamanaOnCVE
+    dep_graph = vamanasearch.graph
+
+    nodeid_to_text = {cve_ids[i]: cve_data_list[i]["details"] for i in range(len(cve_ids))}
+
+    vamanaoncve = VamanaOnCVE(dep_graph, nodeid_to_text, cvevector)
+
+    results = vamanaoncve.search(emb_list[3])
+
+    print(f"query {emb_list[3]} on graph with cve info is: \n{results}")
     

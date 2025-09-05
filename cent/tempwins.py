@@ -1,7 +1,7 @@
 '''
  # @ Create Time: 2025-06-25 16:18:24
  # @ Modified time: 2025-06-25 16:18:27
- # @ Description: temporal window selection for dynamic time windows and chagne point detection
+ # @ Description: temporal window selection for dynamic time windows and change point detection
  '''
 import sys
 from pathlib import Path
