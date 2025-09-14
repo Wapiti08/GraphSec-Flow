@@ -1,16 +1,14 @@
 import sys
 from pathlib import Path
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
-from community import community_louvain
+import community.community_louvain as community_louvain
 import networkx as nx
 from search.vamana import VamanaSearch, VamanaOnCVE
 from cent.temp_cent import TempCentricity
-
-# Louvain Community Detection
-def detect_communities(graph):
-    G = nx.Graph(graph)
-    partition = community_louvain.best_partition(G)
-    return partition
+from cve.cveinfo import osv_cve_api
+from cve.cvevector import CVEVector
+import pickle
+import random
 
 class VLWithTempCent:
     '''
@@ -22,6 +20,13 @@ class VLWithTempCent:
 
     '''
     def __init__(self, vamana: VamanaOnCVE, cve_data, timestamps, centrality: TempCentricity):
+        '''
+        args:
+            vamana: VamanaOnCVE instance with dependency graph and CVE info
+            cve_data: dict mapping node id to CVE score (float)
+            timestamps: dict mapping node id to timestamp (float)
+            centrality: TempCentricity instance for computing temporal centrality
+        '''
         self.vamana = vamana
         self.cve_data = cve_data    
         self.timestamps = timestamps
@@ -61,6 +66,7 @@ class VLWithTempCent:
         
         '''
         # step1: search for nearest neighbors using vamana search
+        print(type(self.vamana))
         neighbors = self.vamana.search(query_vector, k=k)
         # step2: extract temporal subgraph
         temp_subgraph = self._extract_temp_subgraph(t_s, t_e, neighbors)
@@ -111,5 +117,51 @@ if __name__ == "__main__":
     small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
     # depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
 
+    # create vamana instance
+    vamanasearch = VamanaSearch()
+
+    # include three groups of CVEs: log4shell, spectre, shellshock
+    cve_ids = ["CVE-2021-44228", 'CVE-2021-45046', 'CVE-2021-45105', 'CVE-2021-4104',
+               'CVE-2017-5753', "CVE-2017-5715", "CVE-2017-5754",
+               "CVE-2014-6271", "CVE-2014-7169", "CVE-2014-7186"]
+
+    cve_data_list = [osv_cve_api(cve_id) for cve_id in cve_ids]
+
+    cvevector = CVEVector()
+    emb_list = [cvevector.encode(cve_data["details"]) for cve_data in cve_data_list] 
+
+
+    # get the distance of two vectors
+    dist_vec_list = [vamanasearch._distance(emb_list[i], emb_list[i+1]) for i, _ in enumerate(emb_list) if i< len(emb_list)-1]
+    print(f"the distance is {dist_vec_list}")
+
+    # add vector to graph
+    for vec in emb_list:
+        print(vamanasearch.add_point(vec))
     
+    # testing VamanaOnCVE
+    dep_graph = vamanasearch.graph
+    nodeid_to_text = {cve_ids[i]: cve_data_list[i]["details"] for i in range(len(cve_ids))}
+
+    vamanaoncve = VamanaOnCVE(dep_graph, nodeid_to_text, cvevector)
+
+    # make fake cve score mapping
+    # load the graph3
+    with small_depdata_path.open('rb') as fr:
+        depgraph = pickle.load(fr)
+
+    # get all nodes
+    nodes_ids = [n for n, d in depgraph.nodes(data=True)]
+
+    nodes = depgraph.nodes(data=True)
+
+    node_to_cve_score = {
+        n: random.randint(1,4) for i, n in enumerate(nodes_ids)
+    }
+
+    vlwithtempcent = VLWithTempCent(vamanaoncve , node_to_cve_score, nodes, TempCentricity(depgraph))
+
+    # extract temporal subgraph
+    root_comm, root_node = vlwithtempcent.detect_root_cause(emb_list[3], k=10, t_s=100, t_e=500)
     
+    print(f"the root cause community is {root_comm}, the root cause node is {root_node}")

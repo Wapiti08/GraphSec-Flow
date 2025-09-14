@@ -5,9 +5,6 @@
 
 the timestamp is one of the attributes of nodes
 
-
-
-
  '''
 import networkx as nx
 from pathlib import Path
