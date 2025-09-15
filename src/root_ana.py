@@ -100,7 +100,8 @@ class RootCauseAnalyzer:
 
 if __name__ == "__main__":
     # data path
-    small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
+    # small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
+    depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
 
     # create vamana instance
     vamanasearch = VamanaSearch()
@@ -124,7 +125,7 @@ if __name__ == "__main__":
         print("added point id:", vamanasearch.add_point(vec))
 
     # build vamana-on-CVE
-    with small_depdata_path.open('rb') as fr:
+    with depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
 
     nodeid_to_text = {cve_ids[i]: cve_data_list[i]["details"] for i in range(len(cve_ids))}
@@ -132,7 +133,10 @@ if __name__ == "__main__":
 
     # mock CVE scores and timestamps
     nodes_ids = list(depgraph.nodes())
+
+    # read 
     node_to_cve_score = {n: random.randint(1, 4) for n in nodes_ids}
+    
     # if your depgraph already has timestamps as node attributes, extract them; otherwise fake them
     timestamps = {n: depgraph.nodes[n].get("timestamp", random.uniform(0, 1000)) for n in nodes_ids}
 

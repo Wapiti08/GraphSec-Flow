@@ -278,29 +278,29 @@ def main():
 
     '''
     ap = argparse.ArgumentParser(description='Propagation paths from an already-enriched dependency graph.')
-    ap.add_argument('--aug-graph', required=True, help='Augmented graph pickle with CVE attributes')
+    ap.add_argument('--aug_graph', required=True, help='Augmented graph pickle with CVE attributes')
     ap.add_argument('--source', help='Root/source node_id (optional if --auto-source is provided)')
-    ap.add_argument("--auto-source", choices=['earliest', 'indegree0', 'earliest_cve','top_sim'],
+    ap.add_argument("--auto_source", choices=['earliest', 'indegree0', 'earliest_cve','top_sim'],
                    default='earliest_cve',
                     help='Auto-select source strategy when --source is not provided (default: earliest_cve)')
 
     ap.add_argument('--targets', nargs='*', help='Optional explicit target node_ids')
-    ap.add_argument('--k', type='int', default=3, help ='Top-k paths per target')
+    ap.add_argument('--k', type=int, default=3, help ='Top-k paths per target')
     ap.add_argument('--alpha', type=float, default=1.0, help='Weight for time lag')
     ap.add_argument('--beta', type=float, default=0.0, help='Weight for centrality inverse')
     ap.add_argument('--gamma', type=float, default=0.0, help='Weight for node score inverse')
-    ap.add_argument('--blend-lambda', type=float, default=0.7, help='Blend sim vs severity (if similarity-json provided)')
-    ap.add_argument('--similarity-json', default=None, help='Optional node_id -> similarity score JSON')
-    ap.add_argument('--t-start', type=float, help='Timestamp lower bound (inclusive)')
-    ap.add_argument('--t-end', type=float, help="Timestamp upper bound (inclusive)")
-    ap.add_argument("--strict-increase", action='store_true', help='Require strictly increasing timestamps')
+    ap.add_argument('--blend_lambda', type=float, default=0.7, help='Blend sim vs severity (if similarity-json provided)')
+    ap.add_argument('--similarity_json', default=None, help='Optional node_id -> similarity score JSON')
+    ap.add_argument('--t_start', type=float, help='Timestamp lower bound (inclusive)')
+    ap.add_argument('--t_end', type=float, help="Timestamp upper bound (inclusive)")
+    ap.add_argument("--strict_increase", action='store_true', help='Require strictly increasing timestamps')
     ap.add_argument("--paths_jsonl", help="Write path summaries to JSONL")
-    ap.add_argument('--subgraph-gexf', help='Write union-of-paths subgraph (GEXF)')
-    ap.add_argument('--tree-gexf', help='Write arborescence (GEXF)')
+    ap.add_argument('--subgraph_gexf', help='Write union-of-paths subgraph (GEXF)')
+    ap.add_argument('--tree_gexf', help='Write arborescence (GEXF)')
     args = ap.parse_args()
 
     # load graph
-    graph_obj = _safe_load_pickle(args.aug_graph)
+    graph_obj = _safe_load_pickle(Path(args.aug_graph))
     nodes, edges = _detect_graph_nodes_and_edges(graph_obj)
 
     # build undirected then temporal
@@ -340,6 +340,10 @@ def main():
     
     paths_by_t = k_shortest_paths(D, source, targets, k=args.k)
 
+    if not paths_by_t:
+        print('No paths found from source to any target within constraints.')
+        return
+    
     # summaries
     records = []
     for t, paths in paths_by_t.items():
@@ -409,7 +413,7 @@ def main():
         except Exception:
             nx.write_gexf(H, args.tree_gexf)
 
-    if __name__ == '__main__':
-        main()
+if __name__ == '__main__':
+    main()
 
 

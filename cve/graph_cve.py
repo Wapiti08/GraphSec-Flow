@@ -24,7 +24,7 @@ from dataclasses import dataclass, asdict
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Optional, Tuple, Union
 from pathlib import Path
 import pandas as pd
-from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_pickle, 
+from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_pickle
 from utils.util import _as_node_catalog, _detect_graph_nodes_and_edges
 
 
@@ -187,18 +187,18 @@ def augment_graph_with_cves(dep_graph_obj: Any, nodeid_to_release: Mapping[str, 
 
 def main():
     p = argparse.ArgumentParser(description='Generate CVE-enriched dependency dataset (full id match, no CWE).')
-    p.add_argument('--dep-graph', required=True, help="Path to dep_graph.pkl")
-    p.add_argument('--cve-json', required=True, help='Path to aggregated_data.json')
-    p.add_argument('--nodes-pkl', required=True, help='Path to graph_nodes_edges.pkl')
-    p.add_argument('--out-csv', help='Path to write CSV (optional)')
-    p.add_argument('--out-jsonl', help='Path to write JSONL (optional)')
-    p.add_argument('--augment-graph', help='Path to write augmented graph pickle (optional)')
+    p.add_argument('--dep_graph', required=True, help="Path to dep_graph.pkl")
+    p.add_argument('--cve_json', required=True, help='Path to aggregated_data.json')
+    p.add_argument('--nodes_pkl', required=True, help='Path to graph_nodes_edges.pkl')
+    p.add_argument('--out_csv', help='Path to write CSV (optional)')
+    p.add_argument('--out_jsonl', help='Path to write JSONL (optional)')
+    p.add_argument('--augment_graph', help='Path to write augmented graph pickle (optional)')
     p.add_argument('--explode', action='store_true', help='Explode to one row per CVE')
     args = p.parse_args()
 
-    dep_graph = _safe_load_pickle(args.dep_graph)
-    nodes_obj = _safe_load_pickle(args.nodes_pkl)
-    cve_index = _safe_load_json(args.cve_json)
+    dep_graph = _safe_load_pickle(Path(args.dep_graph))
+    nodes_obj = _safe_load_pickle(Path(args.nodes_pkl))
+    cve_index = _safe_load_json(Path(args.cve_json))
 
     nodeid_to_release = build_nodeid_to_release(nodes_obj)
     records = merge_graph_with_cves(dep_graph, nodeid_to_release, cve_index, explode=args.explode)

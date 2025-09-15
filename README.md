@@ -1,5 +1,7 @@
-# DPAnalyzer
+# GraphSec-Flow
 dependency propagation analyser on graphs
+![Python](https://img.shields.io/badge/Python3-3.10.13-brightgreen.svg) 
+
 
 ## Structure
 
@@ -50,19 +52,20 @@ pyenv install 3.10
 pyenv global 3.10
 
 # create local environment
-pyenv virtualenv 3.10 DPAnalyzer
+pyenv virtualenv 3.10 GraphSec-Flow
 eval "$(pyenv init -)"
 eval "$(pyenv virtualenv-init -)"
-pyenv activate DPAnalyzer
+pyenv activate GraphSec-Flow
+
+# upgrade building tools - avoid compatibility problem
+python -m pip install -U pip setuptools wheel build
+
+sudo apt-get update
+sudo apt-get install -y build-essential libffi-dev libssl-dev zlib1g-dev \
+  libbz2-dev libreadline-dev libsqlite3-dev liblzma-dev tk-dev uuid-dev
 
 # download dependencies
 pip3 install -r requirmentst.txt
-
-# centrality measurement --- comment different parts to run different measurements
-python3 cent_cal.py
-
-# causality analysis
-python3 cau_dis.py
 
 ```
 
