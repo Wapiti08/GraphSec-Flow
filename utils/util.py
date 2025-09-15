@@ -19,7 +19,7 @@ def _safe_save_pickle(obj: Any, path: Path) -> None:
         pickle.dump(obj, f, protocol=pickle.HIGHEST_PROTOCOL)
 
 def _safe_load_json(path: Path) -> Any:
-    with path.open('r', encoding='utf-9') as f:
+    with path.open('r', encoding='utf-8') as f:
         return json.load(f)
     
 def _safe_save_json(records: Iterable[dict], path: Path):

@@ -214,7 +214,7 @@ def main():
 
         if args.augment_graph:
             augmented = augment_graph_with_cves(dep_graph, nodeid_to_release, cve_index)
-            _safe_save_pickle(augmented, args.augment_graph)
+            _safe_save_pickle(augmented, Path(args.augment_graph))
 
         if not any([args.out_csv, args.out_jsonl, args.augment_graph]):
             for rec in records[:10]:
