@@ -12,6 +12,13 @@ from cve.cvevector import CVEVector
 import networkx as nx
 from cve import cveinfo
 from cve.cveinfo import osv_cve_api
+from typing import Dict, List, Tuple, Optional, Any
+import math
+import heapq
+from collections import defaultdict
+import time
+
+SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
 
 class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
@@ -142,30 +149,63 @@ class VamanaSearch:
     
 class VamanaOnCVE:
     '''
-    put "small volume of nodes with CVE" inside Vamana ANN:
-
-    - put only nodes with cve inside ANN
-    - provide .search to return node ids
-    - expose .dep_graph for community detection
+    Reduce the index granularity to (node_id, cve_idx). During searches, first hit (node, cve).
+    Then perform max aggregation at the node level, ultimately returning a list of node_ids 
+    (compatible with RootCauseAnalyzer).
 
     '''
-    def __init__(self, dep_graph: nx.Graph, nodeid_to_text: dict, embedder: CVEVector,
-                 m=8, ef_construction=100):
+    def __init__(self, dep_graph: nx.Graph, nodeid_to_texts: Dict[Any, List[str]], 
+                 cvevector, vamana_search: VamanaSearch):
+        '''
+        args:
+            dep_graph: networkx graph
+            nodeid_to_texts: node_id -> [cve_text1, cve_text2, ...]
+            cvevector: instance of CVEVector
+            vamana_search: instance of VamanaSearch
+        '''
         self.dep_graph = dep_graph
-        self.embedder = embedder
-        self.ann = VamanaSearch(M=m, ef_construction=ef_construction)
+        self.nodeid_to_texts = nodeid_to_texts
+        self.embedder = cvevector
+        self.ann = vamana_search
 
         # build two reflection
-        self.ann_to_node = {}
-        self.node_to_ann = {}
+        ## from point_id -> (node_id, cve_idx)
+        self.pid_to_pair: Dict[int, Tuple[Any, int]] = {}
+        ## from node_id -> list of point_id
+        self.node_to_pids: Dict[Any, List[int]] = defaultdict(list)
 
-        # build index 
-        for node_id, text in nodeid_to_text.items():
-            vec = self.embedder.encode(text)
-            ann_idx = self.ann.add_point(vec)
-            self.ann_to_node[ann_idx] = node_id
-            self.node_to_ann[node_id] = ann_idx
+        # build node weight
+        self.cve_meta: Dict[Tuple[Any, int], Dict[str, Any]] = {}
+
+    # assign weight based on CVE severity
+    @staticmethod
+    def _severity_weight(sev: Optional[str]) -> float:
+        if sev is None:
+            return 1.0
         
+        sev = sev.upper()
+        if sev in ("CRITICAL", "HIGH", "MODERATE", "MEDIUM", "LOW"):
+            return float(SEV_WEIGHT[sev])
+
+        return 1.0
+    
+    # assign weight based on timestamp
+    @staticmethod
+    def _time_decay(ts_ms: Optional[int], now_ms: Optional[int] = None, half_life_days: float = 90.0) -> float:
+        if ts_ms is None:
+            return 1.0
+        if now_ms is None:
+            now_ms = int(time.time() * 1000) 
+        
+        dt_ms = max(0, now_ms - ts_ms)
+        dt_days = (now_ms - ts_ms) / 86400000
+
+        return 0.5 ** (dt_days / half_life_days)
+
+    def build(self, cve_records: Optional[Dict[Any, List[Dict[str, Any]]]] = None):
+        
+
+
     def search(self, query_vec, k = 10):
         '''
         input: query_vec (np.na)

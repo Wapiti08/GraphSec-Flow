@@ -40,7 +40,7 @@ def osv_cve_api(cve_id):
 
 if __name__ == "__main__":
     # Example usage
-    cve_id = "CVE-2016-9910"
+    cve_id = "BIT-jenkins-2023-36478"
     osv_id = "OSV-2020-111"
     package = "org.jenkins-ci.main:cli:1.591"
     cwe_id = "CWE-20"

@@ -39,7 +39,7 @@ import pickle
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import networkx as nx
-from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_pickle, _safe_save_json
+from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_json
 from utils.util import _detect_graph_nodes_and_edges, to_undirected_graph
 
 

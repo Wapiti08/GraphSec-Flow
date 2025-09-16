@@ -16,6 +16,7 @@ from cve.cveinfo import osv_cve_api
 from cve.cvevector import CVEVector
 import pickle
 
+SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
 
 class RootCauseAnalyzer:
     '''
@@ -101,15 +102,15 @@ class RootCauseAnalyzer:
 if __name__ == "__main__":
     # data path
     # small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
-    depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
+    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
+
+    with cve_depdata_path.open('rb') as fr:
+        depgraph = pickle.load(fr)
 
     # create vamana instance
     vamanasearch = VamanaSearch()
 
-    # include three groups of CVEs: log4shell, spectre, shellshock
-    cve_ids = ["CVE-2021-44228", 'CVE-2021-45046', 'CVE-2021-45105', 'CVE-2021-4104',
-               'CVE-2017-5753', "CVE-2017-5715", "CVE-2017-5754",
-               "CVE-2014-6271", "CVE-2014-7169", "CVE-2014-7186"]
+    cve_nodes_ids = [(nid, attrs["cve_list"]) for nid, attrs in depgraph.nodes(data=True) if attrs['has_cve']]
 
     cve_data_list = [osv_cve_api(cve_id) for cve_id in cve_ids]
 
@@ -125,17 +126,12 @@ if __name__ == "__main__":
         print("added point id:", vamanasearch.add_point(vec))
 
     # build vamana-on-CVE
-    with depdata_path.open('rb') as fr:
-        depgraph = pickle.load(fr)
-
     nodeid_to_text = {cve_ids[i]: cve_data_list[i]["details"] for i in range(len(cve_ids))}
     vamanaoncve = VamanaOnCVE(depgraph, nodeid_to_text, cvevector)
 
     # mock CVE scores and timestamps
     nodes_ids = list(depgraph.nodes())
 
-    # read 
-    node_to_cve_score = {n: random.randint(1, 4) for n in nodes_ids}
     
     # if your depgraph already has timestamps as node attributes, extract them; otherwise fake them
     timestamps = {n: depgraph.nodes[n].get("timestamp", random.uniform(0, 1000)) for n in nodes_ids}

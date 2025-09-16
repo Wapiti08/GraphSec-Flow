@@ -83,7 +83,8 @@ class CVEVector:
 if __name__ == "__main__":
 
     # get one instance of CVE instance
-    cve_id = "CVE-2016-9910"
+    # cve_id = "CVE-2016-9910"
+    cve_id = "BIT-jenkins-2023-36478"
     cve_id_1 = "CVE-2024-55591"
     cve_data = osv_cve_api(cve_id)
     cve_data_1 = osv_cve_api(cve_id_1)

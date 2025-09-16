@@ -69,6 +69,16 @@ pip3 install -r requirmentst.txt
 
 ```
 
+## How to use
+
+- generate cve enriched dependency graph
+```
+cd cve
+python3 graph_cve.py --dep_graph {your local path}/data/dep_graph.pkl --cve_json {your local path}/data/aggregated_data.json --nodes_pkl {your local path}/data/graph_nodes_edges.pkl --augment_graph {your local path}/data/dep_graph_cve.pkl
+```
+
+- 
+
 
 ## Statistical Analysis (extra material)
 
