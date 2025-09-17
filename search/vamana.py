@@ -18,7 +18,6 @@ import heapq
 from collections import defaultdict
 import time
 
-SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
 
 class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
@@ -177,43 +176,85 @@ class VamanaOnCVE:
         # build node weight
         self.cve_meta: Dict[Tuple[Any, int], Dict[str, Any]] = {}
 
-    # assign weight based on CVE severity
-    @staticmethod
-    def _severity_weight(sev: Optional[str]) -> float:
-        if sev is None:
-            return 1.0
-        
-        sev = sev.upper()
-        if sev in ("CRITICAL", "HIGH", "MODERATE", "MEDIUM", "LOW"):
-            return float(SEV_WEIGHT[sev])
-
-        return 1.0
-    
-    # assign weight based on timestamp
-    @staticmethod
-    def _time_decay(ts_ms: Optional[int], now_ms: Optional[int] = None, half_life_days: float = 90.0) -> float:
-        if ts_ms is None:
-            return 1.0
-        if now_ms is None:
-            now_ms = int(time.time() * 1000) 
-        
-        dt_ms = max(0, now_ms - ts_ms)
-        dt_days = (now_ms - ts_ms) / 86400000
-
-        return 0.5 ** (dt_days / half_life_days)
-
     def build(self, cve_records: Optional[Dict[Any, List[Dict[str, Any]]]] = None):
+        for node_id, texts in self.nodeid_to_texts.items():
+            for i, text in enumerate(texts):
+                vec = self.embedder.encode(text)
+                pid = self.ann.add_point(vec)
+                self.pid_to_pair[pid] = (node_id, i)
+                self.node_to_pids[node_id].append(pid)
+                if cve_records and node_id in cve_records and i < len(cve_records[node_id]):
+                    self.cve_meta[(node_id, i)] = {
+                        "cve_id": cve_records[node_id][i].get("name"),
+                        "severity": cve_records[node_id][i].get("severity"),
+                        "timestamp": cve_records[node_id][i].get("timestamp"),
+                    }
+
+    def _agg_node_scores(
+            self,
+            raw_hits: List[Tuple[int, float]],
+            agg: str="max"
+        ):
+        per_node = defaultdict(list)
+        for pid, sim in raw_hits:
+            node_id, _ = self.pid_to_pair[pid]
+            per_node[node_id].append((pid, sim))
         
+        node_scores: Dict[Any, float] = {}
+        node_best: Dict[Any, Tuple[int, float]] = {}
+        # different strategies to aggregate node scores
+        for node_id, arr in per_node.items():
+            if agg == "mean":
+                val = sum(s for _, s in arr) / len(arr)
+                best_pid, best_s = max(arr, key=lambda x: x[1])
+            elif agg == "sum":
+                val = sum(s for _, s in arr)
+                best_pid, best_s = max(arr, key=lambda x: x[1])
+            else: # max
+                best_pid, best_s = max(arr, key=lambda x: x[1])
+                val = best_s
+            node_scores[node_id] = val
+            node_best[node_id] = (best_pid, best_s)
+        
+        return node_scores, node_best
 
 
-    def search(self, query_vec, k = 10):
+    def search(self, 
+               query_vec, 
+               k = 10,
+               M: Optional[int] = None,
+               agg: str = "max",
+               return_explanations: bool=False):
         '''
         input: query_vec (np.na)
         output: k dependent graph node_id
         '''
-        nn_ann_idx = self.ann.search(query_vec, k = k)
-        return [self.ann_to_node[i] for i in nn_ann_idx if i in self.ann_to_node]
+        # choose enough candidates from node-level
+        M = M or max(50, k*5)
+        raw_hits = self.ann.search(query_vec, k=M) # -> [([point_id, similarity])]
+        node_scores, node_best = self._agg_node_scores(raw_hits, agg=agg)
+        top_nodes = heapq.nlargest(k, node_scores.items(), key=lambda x: x[1])
+        neighbors = [n for n, _ in top_nodes]
 
+        if not return_explanations:
+            return neighbors
+        
+        # build explanations
+        explanations: Dict[Any, Dict[str, Any]] = {}
+        for node_id, _ in top_nodes:
+            best_pid, best_s = node_best[node_id]
+            n, cidx = self.pid_to_pair[best_pid]
+            meta = self.cve_meta.get((n, cidx), {})
+            explanations[node_id] = {
+                'best_point_id': best_pid,
+                'best_similarity': best_s,
+                'best_cve_id': meta.get("cve_id"),
+                "best_severity": meta.get("severity"),
+                "best_timestamp_ms": meta.get("timestamp"),
+                "best_text": self.nodeid_to_texts.get(node_id, [None])[cidx] if node_id in self.nodeid_to_texts else None,
+            }
+
+        return neighbors, explanations
 
 if __name__ =="__main__":
     # testing vamana search:

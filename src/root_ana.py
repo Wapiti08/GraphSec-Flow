@@ -16,7 +16,6 @@ from cve.cveinfo import osv_cve_api
 from cve.cvevector import CVEVector
 import pickle
 
-SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
 
 class RootCauseAnalyzer:
     '''
@@ -25,7 +24,6 @@ class RootCauseAnalyzer:
     2) Build a temporal subgraph over those candidates
     3) Detect a communities and score them temporally
     4) Choose a representative root node from the top community
-
     
     The root node is selected by a tie-breaker prioritizing:
       - higher CVE score
@@ -52,13 +50,18 @@ class RootCauseAnalyzer:
             centrality_provider=centrality,
         )
 
-    def _node_rank_key(self, cent_scores: Dict[int, float]):
+    def _node_rank_key(self, 
+                       cent_scores: Dict[int, float],
+                       node_score_override: Optional[Dict[int, float]] = None):
+        node_score_override = node_score_override or {}
+
         def _key(n: int):
-            return (
-                self.cve_scores.get(n, 0.0),
-                -self.timestamps.get(n, float("inf")),
-                cent_scores.get(n, 0.0),
-            )
+            # priopritize by CVE score, then timestamp, then centrality
+            cve_score = node_score_override.get(n, self.cve_scores.get(n, 0.0))
+            ts_key = -self.timestamps.get(n, float('inf'))  # earlier is better
+            cent = cent_scores.get(n, 0.0)
+            return (cve_score, ts_key, cent)
+
         return _key
 
     def analyze(
@@ -67,24 +70,41 @@ class RootCauseAnalyzer:
             k: int = 10,
             t_s: Optional[float] = None,
             t_e: Optional[float] = None,
+            explain: bool=True,
+            cve_score_lookup: Optional[callable[[str],float]] = None, # cve_id -> score
         ) -> Tuple[Optional[int], Optional[int]]:
         """
         Returns (root_community_id, root_node_id). If no nodes survive the filters, returns (None, None).
         """
-                # 1) nearest neighbors from Vamana
-        neighbors = self.vamana.search(query_vector, k=k)
+        # 1) search (with explain)
+        res = self.vamana.search(query_vector, k=k, return_explanations=explain)
+        if explain and isinstance(res, tuple):
+            neighbors, explanations = res
+        else:
+            neighbors, explanations = res, None
 
-        # 2) temporal subgraph
+        # 2) build temporal override scores
+        node_score_override: Dict[int, float] = {}
+        if explanations and cve_score_lookup:
+            for node_id, info in explanations.items():
+                cve_id = info.get("best_cve_id")
+                if cve_id:
+                    try:
+                        node_score_override[node_id] = cve_score_lookup(cve_id)
+                    except Exception as e:
+                        pass
+
+        # 3) temporal subgraph
         temp_subgraph = self._detector.extract_temporal_subgraph(t_s, t_e, neighbors)
         if temp_subgraph.number_of_nodes() == 0:
             return None, None
 
-        # 3) communities
+        # 4) communities
         comm_res = self._detector.detect_communities(temp_subgraph)
         if not comm_res.comm_to_nodes:
             return None, None
 
-        # 4) score communities
+        # 5) score communities
         root_comm, cent_scores = self._detector.choose_root_community(
             comm_to_nodes=comm_res.comm_to_nodes,
             t_s=t_s,
@@ -93,7 +113,7 @@ class RootCauseAnalyzer:
         if root_comm is None:
             return None, None
 
-        # 5) pick root node from the chosen community
+        # 6) pick root node from the chosen community
         cand_nodes = [n for n, c in comm_res.partition.items() if c == root_comm]
         root_node = max(cand_nodes, key=self._node_rank_key(cent_scores))
         return root_comm, root_node
@@ -111,30 +131,6 @@ if __name__ == "__main__":
     vamanasearch = VamanaSearch()
 
     cve_nodes_ids = [(nid, attrs["cve_list"]) for nid, attrs in depgraph.nodes(data=True) if attrs['has_cve']]
-
-    cve_data_list = [osv_cve_api(cve_id) for cve_id in cve_ids]
-
-    cvevector = CVEVector()
-    emb_list = [cvevector.encode(cve_data["details"]) for cve_data in cve_data_list]
-
-    # get the distance of two vectors
-    dist_vec_list = [vamanasearch._distance(emb_list[i], emb_list[i+1]) for i in range(len(emb_list)-1)]
-    print(f"pairwise distances: {dist_vec_list}")
-
-    # add vector to graph
-    for vec in emb_list:
-        print("added point id:", vamanasearch.add_point(vec))
-
-    # build vamana-on-CVE
-    nodeid_to_text = {cve_ids[i]: cve_data_list[i]["details"] for i in range(len(cve_ids))}
-    vamanaoncve = VamanaOnCVE(depgraph, nodeid_to_text, cvevector)
-
-    # mock CVE scores and timestamps
-    nodes_ids = list(depgraph.nodes())
-
-    
-    # if your depgraph already has timestamps as node attributes, extract them; otherwise fake them
-    timestamps = {n: depgraph.nodes[n].get("timestamp", random.uniform(0, 1000)) for n in nodes_ids}
 
     analyzer = RootCauseAnalyzer(
         vamana=vamanaoncve,
