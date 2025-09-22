@@ -266,6 +266,41 @@ class VamanaOnCVE:
 
         return neighbors, explanations
 
+
+def _first_nonempty(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
+
+def _normalize_cve_id(item: Any) -> Optional[str]:
+    """Turn a cve_list entry into a lookup string for OSV."""
+    if isinstance(item, str) and item.strip():
+        return item.strip()
+    if isinstance(item, dict):
+        for key in ("id", "name", "cve_id", "cveId"):
+            val = item.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
+
+def _synth_text_from_dict(cid: str, d: Dict[str, Any]) -> Optional[str]:
+    """Fallback text if OSV has no details; uses fields present on the node."""
+    sev = d.get("severity")
+    cwe = d.get("cwe_ids")
+    if isinstance(cwe, (list, tuple)):
+        cwe_str = ", ".join(map(str, cwe))
+    else:
+        cwe_str = str(cwe) if cwe else ""
+    parts = [cid]
+    if sev: parts.append(f"severity {sev}")
+    if cwe_str: parts.append(f"CWE {cwe_str}")
+    return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]
+
+
+
 if __name__ =="__main__":
 
     # load dependency graph with cve info
@@ -281,21 +316,17 @@ if __name__ =="__main__":
 
     nodeid_to_texts: Dict[Any, List[str]] = {}
     cve_records_for_meta: Dict[Any, List[Dict[str, Any]]] = {}
-
-    def _first_nonempty(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
-        for k in keys:
-            v = d.get(k)
-            if isinstance(v, str) and v.strip():
-                return v.strip()
-        return None
+    fallback_used = 0
+    osv_hits = 0
+    dropped = 0
     
     TEXT_KEYS = ["details", "summary", "description"]
 
     # warm up the persistent cache once per unique CVE id
     unique_cve_ids = {
-        cve_id for _, attrs in depgraph.nodes(data=True) 
-        for cve_id in (attrs.get("cve_list") or []) 
-        if isinstance(cve_id, str)
+        cid for _, attrs in depgraph.nodes(data=True) 
+        for cid in ([_normalize_cve_id(x) for x in (attrs.get("cve_list") or [])])
+        if cid
     }
 
     for cid in unique_cve_ids:
@@ -305,25 +336,38 @@ if __name__ =="__main__":
             pass
     
     for nid, attrs in depgraph.nodes(data=True):
-        cve_ids = attrs.get("cve_list", []) or []
+        raw_list = attrs.get("cve_list", []) or []
         texts: List[str] = []
         metas: List[Dict[str, Any]] = []
 
-        for cve_id in cve_ids:
-            if not isinstance(cve_id, str):
+        for raw in raw_list:
+            cid = _normalize_cve_id(raw)
+            if not cid:
+                dropped += 1
                 continue
+
+            # Try OSV first
+            rec: Dict[str, Any] = {}
             try:
-                rec = osv_cve_api(cve_id) or {}
+                rec = osv_cve_api(cid) or {}
             except Exception as e:
                 rec = {"_error": str(e)}
             
-            text = _first_nonempty(rec, text_keys=TEXT_KEYS)
+            # Fallback: synthesize a minimal text from the node's dict if OSV had nothing
+            if not text and isinstance(raw, dict):
+                text = _synth_text_from_dict(cid, raw)
+                if text:
+                    fallback_used += 1
+            elif text:
+                osv_hits += 1
+
             if not text:
+                dropped += 1
                 continue
 
             texts.append(text)
             metas.append({
-                "name": rec.get("id") or rec.get("name") or cve_id,
+                "name": rec.get("id") or rec.get("name") or cid,
                 "severity": rec.get("severity") or rec.get("cvss") or rec.get("cvssScore"),
                 "timestamp": rec.get("published") or rec.get("modified"),
             })
@@ -332,7 +376,6 @@ if __name__ =="__main__":
             nodeid_to_texts[nid] = texts
             cve_records_for_meta[nid] = metas
     
-
     if not nodeid_to_texts:
         raise RuntimeError("No CVE texts found. Nodes had empty cve_list or OSV lookups returned no detail.")
 
@@ -340,8 +383,31 @@ if __name__ =="__main__":
     embedder = CVEVector()
 
     # ------------ build vamana search -------------
+    ann = VamanaSearch()
+    vac = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
+    vac.build(cve_records=cve_records_for_meta)
 
+    # ------------ form a query vector ------------
+    any_node = next(iter(nodeid_to_texts))
+    sample_text = nodeid_to_texts[any_node][0]
+    print(f"[info] Using node {any_node}'s first CVE text as the query.")
+    query_vec = embedder.encode(sample_text)
 
+    # ------------ run search and print results ------------
+    start = time.time()
+    neighbors, explanations = vac.search(query_vec, k=5, agg="max", return_explanations=True)
+    ms = (time.time() - start) * 1000.0
+
+    print("\n Top-5 nodes (nearest by CVE text):")
+    for rank, nid in enumerate(neighbors, 1):
+        exp = explanations.get(nid, {})
+        print(f"{rank}. node={nid}  sim={exp.get('best_similarity'):.4f}  "
+              f"cve={exp.get('best_cve_id') or 'N/A'}  severity={exp.get('best_severity') or 'N/A'}")
+        bt = exp.get("best_text")
+        if bt:
+            snip = (bt[:140] + "…") if len(bt) > 140 else bt
+            print(f"   text: {snip}")
+    print(f"\nSearch finished in {ms:.1f} ms")
 
 
 

@@ -37,7 +37,7 @@ class RootCauseAnalyzer:
         timestamps: Dict[int, float],
         centrality: TempCentricity,
         ) -> None:
-        
+
         self.vamana = vamana
         self.cve_scores = cve_scores
         self.timestamps = timestamps
@@ -121,23 +121,9 @@ class RootCauseAnalyzer:
 
 if __name__ == "__main__":
     # data path
-    # small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
     cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
 
     with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
 
-    # create vamana instance
-    vamanasearch = VamanaSearch()
-
-    cve_nodes_ids = [(nid, attrs["cve_list"]) for nid, attrs in depgraph.nodes(data=True) if attrs['has_cve']]
-
-    analyzer = RootCauseAnalyzer(
-        vamana=vamanaoncve,
-        cve_scores=node_to_cve_score,
-        timestamps=timestamps,
-        centrality=TempCentricity(depgraph),
-    )
-
-    root_comm, root_node = analyzer.analyze(emb_list[3], k=10, t_s=100, t_e=700)
-    print(f"[Result] root community: {root_comm}, root node: {root_node}")
+    
