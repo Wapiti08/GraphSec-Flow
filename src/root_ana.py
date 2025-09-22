@@ -13,7 +13,6 @@ from cent.temp_cent import TempCentricity
 from com.commdet import TemporalCommDetector
 import random
 from cve.cveinfo import osv_cve_api 
-from cve.cvevector import CVEVector
 import pickle
 
 
@@ -38,6 +37,7 @@ class RootCauseAnalyzer:
         timestamps: Dict[int, float],
         centrality: TempCentricity,
         ) -> None:
+        
         self.vamana = vamana
         self.cve_scores = cve_scores
         self.timestamps = timestamps

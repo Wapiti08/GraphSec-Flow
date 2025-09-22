@@ -17,7 +17,7 @@ import math
 import heapq
 from collections import defaultdict
 import time
-
+import pickle
 
 class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
@@ -227,11 +227,21 @@ class VamanaOnCVE:
                return_explanations: bool=False):
         '''
         input: query_vec (np.na)
-        output: k dependent graph node_id
+        output: k dependent graph node_id (plus optional explanations)
         '''
         # choose enough candidates from node-level
         M = M or max(50, k*5)
-        raw_hits = self.ann.search(query_vec, k=M) # -> [([point_id, similarity])]
+
+        # VamanaSearch.search returns a list of point_ids only, so compute sims here
+        candidate_pids = self.ann.search(query_vec, k=M) # -> [([point_id, similarity])]
+        raw_hits: List[Tuple[int, float]] = []
+
+        for pid in candidate_pids:
+            # define similarity as negative euclidean distance (larger is better)
+            sim = -self.ann._distance(query_vec, self.ann.data[pid])
+            raw_hits.append((pid, sim))
+
+
         node_scores, node_best = self._agg_node_scores(raw_hits, agg=agg)
         top_nodes = heapq.nlargest(k, node_scores.items(), key=lambda x: x[1])
         neighbors = [n for n, _ in top_nodes]
@@ -257,36 +267,83 @@ class VamanaOnCVE:
         return neighbors, explanations
 
 if __name__ =="__main__":
-    # testing vamana search:
-    vamanasearch = VamanaSearch()
 
-    # include three groups of CVEs: log4shell, spectre, shellshock
-    cve_ids = ["CVE-2021-44228", 'CVE-2021-45046', 'CVE-2021-45105', 'CVE-2021-4104',
-               'CVE-2017-5753', "CVE-2017-5715", "CVE-2017-5754",
-               "CVE-2014-6271", "CVE-2014-7169", "CVE-2014-7186"]
+    # load dependency graph with cve info
+    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
 
-    cve_data_list = [osv_cve_api(cve_id) for cve_id in cve_ids]
-
-    cvevector = CVEVector()
-    emb_list = [cvevector.encode(cve_data["details"]) for cve_data in cve_data_list] 
-
-
-    # get the distance of two vectors
-    dist_vec_list = [vamanasearch._distance(emb_list[i], emb_list[i+1]) for i, _ in enumerate(emb_list) if i< len(emb_list)-1]
-    print(f"the distance is {dist_vec_list}")
-
-    # add vector to graph
-    for vec in emb_list:
-        print(vamanasearch.add_point(vec))
+    with cve_depdata_path.open('rb') as fr:
+        depgraph = pickle.load(fr)
     
-    # testing VamanaOnCVE
-    dep_graph = vamanasearch.graph
+    assert isinstance(depgraph, nx.Graph), "dep_graph_cve.pkl should contain a networkx.Graph or {'graph': nx.Graph}"
 
-    nodeid_to_text = {cve_ids[i]: cve_data_list[i]["details"] for i in range(len(cve_ids))}
+    # ============ extract node -> [cve_texts] ============
+    # each node has ""cve_list"" = ["CVE-xxxx"]
 
-    vamanaoncve = VamanaOnCVE(dep_graph, nodeid_to_text, cvevector)
+    nodeid_to_texts: Dict[Any, List[str]] = {}
+    cve_records_for_meta: Dict[Any, List[Dict[str, Any]]] = {}
 
-    results = vamanaoncve.search(emb_list[3])
+    def _first_nonempty(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
+        for k in keys:
+            v = d.get(k)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+        return None
+    
+    TEXT_KEYS = ["details", "summary", "description"]
 
-    print(f"query {emb_list[3]} on graph with cve info is: \n{results}")
+    # warm up the persistent cache once per unique CVE id
+    unique_cve_ids = {
+        cve_id for _, attrs in depgraph.nodes(data=True) 
+        for cve_id in (attrs.get("cve_list") or []) 
+        if isinstance(cve_id, str)
+    }
+
+    for cid in unique_cve_ids:
+        try:
+            _ = osv_cve_api(cid)
+        except Exception:
+            pass
+    
+    for nid, attrs in depgraph.nodes(data=True):
+        cve_ids = attrs.get("cve_list", []) or []
+        texts: List[str] = []
+        metas: List[Dict[str, Any]] = []
+
+        for cve_id in cve_ids:
+            if not isinstance(cve_id, str):
+                continue
+            try:
+                rec = osv_cve_api(cve_id) or {}
+            except Exception as e:
+                rec = {"_error": str(e)}
+            
+            text = _first_nonempty(rec, text_keys=TEXT_KEYS)
+            if not text:
+                continue
+
+            texts.append(text)
+            metas.append({
+                "name": rec.get("id") or rec.get("name") or cve_id,
+                "severity": rec.get("severity") or rec.get("cvss") or rec.get("cvssScore"),
+                "timestamp": rec.get("published") or rec.get("modified"),
+            })
+        
+        if texts:
+            nodeid_to_texts[nid] = texts
+            cve_records_for_meta[nid] = metas
+    
+
+    if not nodeid_to_texts:
+        raise RuntimeError("No CVE texts found. Nodes had empty cve_list or OSV lookups returned no detail.")
+
+    # build embedder 
+    embedder = CVEVector()
+
+    # ------------ build vamana search -------------
+
+
+
+
+
+
     
