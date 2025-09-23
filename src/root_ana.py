@@ -13,6 +13,7 @@ from cent.temp_cent import TempCentricity
 from com.commdet import TemporalCommDetector
 import random
 from cve.cveinfo import osv_cve_api 
+from cve.cvescore import load_cve_seve_json, cve_score_lookup
 import pickle
 
 
@@ -153,4 +154,40 @@ if __name__ == "__main__":
     )
 
     # ---- Define CVE score lookup via OSV API ----
+    # load cve info dict from a json file
+    cve_agg_data_dict_path = Path.cwd().parent.joinpath("data", "aggregated_data.json")
+    cve_agg_data_dict = load_cve_seve_json(cve_agg_data_dict_path)
+
+    def _cve_score_lookup(cve_id: str) -> float:
+        cve_dict = osv_cve_api(cve_id)
+        return cve_score_lookup(cve_dict, cve_agg_data_dict)
     
+    # ----- Choose a time window for testing -----
+    all_ts = sorted(timestamps.values())
+    t_s = all_ts[len(all_ts) // 4]
+    t_e = all_ts[3 * len(all_ts) // 4]
+
+    # ---------- Run analysis ----------
+    query_vec = [random.random() for _ in range(16)]  # adjust dim if needed
+    print("Running RootCauseAnalyzer with real values...")
+
+    root_comm, root_node = analyzer.analyze(
+        query_vector=query_vec,
+        k=15,
+        t_s=t_s,
+        t_e=t_e,
+        explain=True,
+        cve_score_lookup=_cve_score_lookup,
+    )
+
+    if root_comm is None or root_node is None:
+        print("No root cause detected in the given window.")
+    else:
+        nd = depgraph.nodes[root_node]
+        print(f"Root community: {root_comm}")
+        print(f"Root node: {root_node}")
+        print({
+            "cve_id": nd.get("cve_id"),
+            "cve_score": cve_scores[root_node],
+            "timestamp": timestamps[root_node],
+        })

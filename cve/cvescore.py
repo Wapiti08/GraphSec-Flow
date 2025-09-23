@@ -89,4 +89,69 @@ def load_cve_seve_json(path: Path) -> Dict[str, str]:
 
     '''
     data = json.loads(path.read_text(encoding='utf-8'))
+
+    def extract_from_iter(items: Iterable[Dict[str, Any]], out: Dict[str, str]):
+        for it in items:
+            name = it.get("name")
+            sev = it.get("severity")
+            if name and sev:
+                out[name] = sev
     
+    out: Dict[str, str] = {}
+
+    if isinstance(data, list):
+        extract_from_iter(data, out)
+    elif isinstance(data, dict):
+        for v in data.values():
+            if isinstance(v, list):
+                extract_from_iter(v, out)
+    
+    else:
+        raise ValueError(f"Unexpected JSON structure in {path}")
+
+    return out
+
+
+def cve_score_lookup(
+    cve_dict: str | None = None,
+    sev_str: dict | None = None,
+    ) -> float:
+    '''
+    Args:
+        cve_dict: the cve information dict from OSV or NVD
+        sev_str: optional severity string like "CRITICAL" or "HIGH"
+    
+    Priority:
+        1) map severity_str to numeric
+        2) numeric score in osv_dict
+        3) cvss31 vector in osv_dict -> compute base score
+        4) fallback 0.0
+    Expected osv_dict shape examples:
+        {"severity": [{"score": 8.8, "type": "CVSS_V3"}], ...}
+        {"severity": [{"type":"CVSS_V3","score":null,"score_vector":"CVSS:3.1/..."}], ...}
+    '''
+    if sev_str:
+        return map_severity_to_score(sev_str)
+
+    if cve_dict:
+        sev_list = cve_dict.get("severity") or []
+        for entry in sev_list:
+            sc = entry.get("score")
+            if sc is not None:
+                try:
+                    return float(sc)
+                except Exception:
+                    pass
+        
+        for entry in sev_list:
+            vec = entry.get("score_vector") or entry.get("vectorString")
+            if not vec:
+                cvss = cve_dict.get("cvssV3") or {}
+                vec = cvss.get("vectorString")
+            if vec and isinstance(vec, str) and vec.startswith("CVSS:3.1/"):
+                try:
+                    return cvss31_base_score(vec)
+                except Exception:
+                    pass
+
+    return 0.0
