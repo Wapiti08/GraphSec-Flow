@@ -125,5 +125,32 @@ if __name__ == "__main__":
 
     with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
+    
+    nodes = list(depgraph.nodes())
 
+    # ------------ Extract CVE scores and timestamps directly from node attributes ------------
+    try:
+        cve_scores = {n: float(depgraph.nodes[n]["cve_score"]) for n in nodes}
+    except KeyError:
+        raise KeyError("depgraph nodes missing 'cve_score' attribute")
+    
+    try:
+        timestamps = {n: float(depgraph.nodes[n]["timestamp"]) for n in nodes}
+    except KeyError:
+        raise KeyError("depgraph nodes missing 'timestamp' attribute")
+    
+    centrality = TempCentricity()
+
+    # initialize Vamana with dependency graph
+    vamana = VamanaOnCVE(dep_graph=depgraph)
+
+    # ---- root cause analyzer ----
+    analyzer = RootCauseAnalyzer(
+        vamana=vamana,
+        cve_scores=cve_scores,
+        timestamps=timestamps,
+        centrality=centrality,
+    )
+
+    # ---- Define CVE score lookup via OSV API ----
     

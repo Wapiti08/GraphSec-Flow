@@ -150,4 +150,4 @@ if __name__ == "__main__":
     for cve_id in cve_ids:
         cve_data = osv_cve_api(cve_id)
         print("----- OSV CVE API ----")
-        # print(cve_data)
+        print(cve_data)

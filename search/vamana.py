@@ -18,6 +18,7 @@ import heapq
 from collections import defaultdict
 import time
 import pickle
+from sideeval import eval_node_self_recall, print_top_similar_pairs, write_eval_report
 
 class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
@@ -353,6 +354,8 @@ if __name__ =="__main__":
             except Exception as e:
                 rec = {"_error": str(e)}
             
+            text = _first_nonempty(rec, TEXT_KEYS)
+            
             # Fallback: synthesize a minimal text from the node's dict if OSV had nothing
             if not text and isinstance(raw, dict):
                 text = _synth_text_from_dict(cid, raw)
@@ -386,6 +389,34 @@ if __name__ =="__main__":
     ann = VamanaSearch()
     vac = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
     vac.build(cve_records=cve_records_for_meta)
+
+    # quick coverage from your build phase
+    coverage = {
+        "nodes_indexed": len(nodeid_to_texts),
+        "total_nodes": depgraph.number_of_nodes(),
+        "osv_hits": osv_hits,
+        "fallback_used": fallback_used,
+        "dropped_entries": dropped,
+    }
+
+    # 1) Quantitative reliability
+    metrics = eval_node_self_recall(vac, k=5, sample_size=200)
+
+    # 2) Qualitative evidence 
+    print_top_similar_pairs(vac, per_point_k=5, top_pairs=10)
+ 
+    # 3) Persist a small JSON report for reproducibility
+    write_eval_report(
+        "vamana_eval_report.json",
+        coverage=coverage,
+        metrics=metrics,
+        params={
+            "M": vac.ann.M,
+            "ef_construction": vac.ann.ef_construction,
+            "agg": "max",
+            "similarity": "1/(1+euclidean)"
+        }
+    )
 
     # ------------ form a query vector ------------
     any_node = next(iter(nodeid_to_texts))
