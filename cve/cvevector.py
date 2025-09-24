@@ -14,12 +14,12 @@ from cve.cveinfo import osv_cve_api
 class CVEVector:
     '''
     use sentenc e transformers to vectorize the description of CVE vulnerabilities
-    - default model: 'sentence-transformers/all-MiniLM-L6-v2'
+    - default model: 'sentence-transformers/all-mpnet-base-v2'
     - output is normalized with L2
     
     '''
     def __init__(self,
-                 model_name_or_path: str = "sentence-transformers/all-MiniLM-L6-v2",
+                 model_name_or_path: str = "sentence-transformers/all-mpnet-base-v2",
                  normalize: bool = True,
                  device: Optional[str] = None,
                  batch_size: int = 32):

@@ -6,15 +6,17 @@
 import sys 
 from pathlib import Path 
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
-from typing import Dict, Iterable, Optional, Tuple
-import networkx as nx
+from typing import Dict, Iterable, Optional, Tuple,Callable
 from search.vamana import VamanaOnCVE, VamanaSearch
+from cve.cvevector import CVEVector
 from cent.temp_cent import TempCentricity
 from com.commdet import TemporalCommDetector
 import random
 from cve.cveinfo import osv_cve_api 
-from cve.cvescore import load_cve_seve_json, cve_score_lookup
+from cve.cvescore import load_cve_seve_json, cve_score_dict_gen, _normalize_cve_id
 import pickle
+from utils.util import _first_nonempty, _synth_text_from_dict   
+import argparse
 
 
 class RootCauseAnalyzer:
@@ -72,7 +74,7 @@ class RootCauseAnalyzer:
             t_s: Optional[float] = None,
             t_e: Optional[float] = None,
             explain: bool=True,
-            cve_score_lookup: Optional[callable[[str],float]] = None, # cve_id -> score
+            cve_score_lookup: Optional[Callable[[str],float]] = None, # cve_id -> score
         ) -> Tuple[Optional[int], Optional[int]]:
         """
         Returns (root_community_id, root_node_id). If no nodes survive the filters, returns (None, None).
@@ -120,60 +122,77 @@ class RootCauseAnalyzer:
         return root_comm, root_node
 
 
-if __name__ == "__main__":
+def main(query_vec = None, k=15):
     # data path
     cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
-
     with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
-    
-    nodes = list(depgraph.nodes())
 
-    # ------------ Extract CVE scores and timestamps directly from node attributes ------------
-    try:
-        cve_scores = {n: float(depgraph.nodes[n]["cve_score"]) for n in nodes}
-    except KeyError:
-        raise KeyError("depgraph nodes missing 'cve_score' attribute")
-    
+    nodes = list(depgraph.nodes)
+
+    unique_cve_ids = {
+        cid for _, attrs in depgraph.nodes(data=True) 
+        for cid in ([_normalize_cve_id(x) for x in (attrs.get("cve_list") or [])])
+        if cid
+    }
+
+    cve_agg_data_dict_path = Path.cwd().parent.joinpath("data", "aggregated_data.json")
+    cve_agg_data_dict = load_cve_seve_json(cve_agg_data_dict_path)
+    cve_scores = cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict)
+
     try:
         timestamps = {n: float(depgraph.nodes[n]["timestamp"]) for n in nodes}
     except KeyError:
         raise KeyError("depgraph nodes missing 'timestamp' attribute")
     
-    centrality = TempCentricity()
+    centrality = TempCentricity(depgraph)
+    embedder = CVEVector()
 
-    # initialize Vamana with dependency graph
-    vamana = VamanaOnCVE(dep_graph=depgraph)
+    nodeid_to_texts = {}
+    TEXT_KEYS = ["details", "summary", "description"]
 
-    # ---- root cause analyzer ----
+    for nid, attrs in depgraph.nodes(data=True):
+        raw_list = attrs.get("cve_list", []) or []
+        texts = []
+        for raw in raw_list:
+            cid = _normalize_cve_id(raw)
+            try:
+                rec = osv_cve_api(cid) or {}
+            except Exception as e:
+                rec = {"_error": str(e)}
+            text = _first_nonempty(rec, TEXT_KEYS)
+            if not text and isinstance(raw, dict):
+                text = _synth_text_from_dict(cid, raw)
+            texts.append(text)
+        if texts:
+            nodeid_to_texts[nid] = texts
+
+    if not nodeid_to_texts:
+        raise RuntimeError("No CVE texts found.")
+
+    ann = VamanaSearch()
+    vamana = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
+
     analyzer = RootCauseAnalyzer(
         vamana=vamana,
         cve_scores=cve_scores,
         timestamps=timestamps,
         centrality=centrality,
     )
-
-    # ---- Define CVE score lookup via OSV API ----
-    # load cve info dict from a json file
-    cve_agg_data_dict_path = Path.cwd().parent.joinpath("data", "aggregated_data.json")
-    cve_agg_data_dict = load_cve_seve_json(cve_agg_data_dict_path)
-
-    def _cve_score_lookup(cve_id: str) -> float:
-        cve_dict = osv_cve_api(cve_id)
-        return cve_score_lookup(cve_dict, cve_agg_data_dict)
     
-    # ----- Choose a time window for testing -----
     all_ts = sorted(timestamps.values())
     t_s = all_ts[len(all_ts) // 4]
     t_e = all_ts[3 * len(all_ts) // 4]
 
-    # ---------- Run analysis ----------
-    query_vec = [random.random() for _ in range(16)]  # adjust dim if needed
-    print("Running RootCauseAnalyzer with real values...")
+    def _cve_score_lookup(cve_id: str) -> float:
+        return cve_scores.get(cve_id, 0.0)
+
+    query_vec = query_vec or [random.random() for _ in range(16)]
+    print("Running RootCauseAnalyzer...")
 
     root_comm, root_node = analyzer.analyze(
         query_vector=query_vec,
-        k=15,
+        k=k,
         t_s=t_s,
         t_e=t_e,
         explain=True,
@@ -191,3 +210,11 @@ if __name__ == "__main__":
             "cve_score": cve_scores[root_node],
             "timestamp": timestamps[root_node],
         })
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Run RootCauseAnalyzer on a query vector")
+    parser.add_argument("--query", type=float, nargs="+", help="Query vector as a list of floats")
+    parser.add_argument("--k", type=int, default=15, help="Number of nearest neighbors")
+    args = parser.parse_args()
+
+    main(query_vec=args.query, k=args.k)

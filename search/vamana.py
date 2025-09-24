@@ -12,13 +12,15 @@ from cve.cvevector import CVEVector
 import networkx as nx
 from cve import cveinfo
 from cve.cveinfo import osv_cve_api
+from cve.cvescore import _normalize_cve_id
 from typing import Dict, List, Tuple, Optional, Any
 import math
 import heapq
 from collections import defaultdict
 import time
 import pickle
-from sideeval import eval_node_self_recall, print_top_similar_pairs, write_eval_report
+from search.sideeval import eval_node_self_recall, print_top_similar_pairs, write_eval_report
+from utils.util import _first_nonempty, _synth_text_from_dict
 
 class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
@@ -268,37 +270,6 @@ class VamanaOnCVE:
         return neighbors, explanations
 
 
-def _first_nonempty(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
-    for k in keys:
-        v = d.get(k)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-    return None
-
-
-def _normalize_cve_id(item: Any) -> Optional[str]:
-    """Turn a cve_list entry into a lookup string for OSV."""
-    if isinstance(item, str) and item.strip():
-        return item.strip()
-    if isinstance(item, dict):
-        for key in ("id", "name", "cve_id", "cveId"):
-            val = item.get(key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
-    return None
-
-def _synth_text_from_dict(cid: str, d: Dict[str, Any]) -> Optional[str]:
-    """Fallback text if OSV has no details; uses fields present on the node."""
-    sev = d.get("severity")
-    cwe = d.get("cwe_ids")
-    if isinstance(cwe, (list, tuple)):
-        cwe_str = ", ".join(map(str, cwe))
-    else:
-        cwe_str = str(cwe) if cwe else ""
-    parts = [cid]
-    if sev: parts.append(f"severity {sev}")
-    if cwe_str: parts.append(f"CWE {cwe_str}")
-    return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]
 
 
 
@@ -442,5 +413,46 @@ if __name__ =="__main__":
 
 
 
+'''
+[eval] node_recall@5: 0.055  MRR: 0.028  (n=200/182165)
 
+[eval] Top 10 most similar CVE text pairs (by 1/(1+d)):
+1. sim=1.0000  A: node=n907449 idx=9 | B: node=n907447 idx=9
+    A: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
+    B: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
+2. sim=1.0000  A: node=n907449 idx=9 | B: node=n10290295 idx=9
+    A: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
+    B: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
+3. sim=1.0000  A: node=n907449 idx=9 | B: node=n10290315 idx=9
+    A: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
+    B: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
+4. sim=1.0000  A: node=n907449 idx=9 | B: node=n10290294 idx=11
+    A: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
+    B: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
+5. sim=1.0000  A: node=n907449 idx=1 | B: node=n907490 idx=0
+    A: Incomplete Cleanup vulnerability in Apache Tomcat.When recycling various internal objects in Apache Tomcat from 11.0.0-M…
+    B: Incomplete Cleanup vulnerability in Apache Tomcat.When recycling various internal objects in Apache Tomcat from 11.0.0-M…
+6. sim=1.0000  A: node=n907449 idx=4 | B: node=n907490 idx=1
+    A: Improper Input Validation vulnerability in Apache Tomcat.Tomcat from 11.0.0-M1 through 11.0.0-M11, from 10.1.0-M1 throug…
+    B: Improper Input Validation vulnerability in Apache Tomcat.Tomcat from 11.0.0-M1 through 11.0.0-M11, from 10.1.0-M1 throug…
+7. sim=1.0000  A: node=n907449 idx=5 | B: node=n907490 idx=2
+    A: URL Redirection to Untrusted Site ('Open Redirect') vulnerability in FORM authentication feature Apache Tomcat.This issu…
+    B: URL Redirection to Untrusted Site ('Open Redirect') vulnerability in FORM authentication feature Apache Tomcat.This issu…
+8. sim=1.0000  A: node=n907449 idx=6 | B: node=n907490 idx=3
+    A: In Apache Tomcat 9.0.0.M1 to 9.0.30, 8.5.0 to 8.5.50 and 7.0.0 to 7.0.99 the HTTP header parsing code used an approach t…
+    B: In Apache Tomcat 9.0.0.M1 to 9.0.30, 8.5.0 to 8.5.50 and 7.0.0 to 7.0.99 the HTTP header parsing code used an approach t…
+9. sim=1.0000  A: node=n907449 idx=7 | B: node=n907490 idx=4
+    A: Apache Tomcat 10.0.0-M1 to 10.0.6, 9.0.0.M1 to 9.0.46 and 8.5.0 to 8.5.66 did not correctly parse the HTTP transfer-enco…
+    B: Apache Tomcat 10.0.0-M1 to 10.0.6, 9.0.0.M1 to 9.0.46 and 8.5.0 to 8.5.66 did not correctly parse the HTTP transfer-enco…
+10. sim=1.0000  A: node=n907449 idx=8 | B: node=n907490 idx=6
+    A: If a web application sends a WebSocket message concurrently with the WebSocket connection closing when running on Apache…
+    B: If a web application sends a WebSocket message concurrently with the WebSocket connection closing when running on Apache…
+[eval] wrote report -> vamana_eval_report.json
+[info] Using node n9949684's first CVE text as the query.
+
+ Top-5 nodes (nearest by CVE text):
+1. node=n9949684  sim=-0.0000  cve=BIT-jenkins-2023-36478  severity=N/A
+   text: Eclipse Jetty provides a web server and servlet container. In versions 11.0.0 through 11.0.15, 10.0.0 through 10.0.15, and 9.0.0 through 9.4…
+
+'''
     

@@ -2,6 +2,9 @@
  # @ Create Time: 2025-09-23 10:11:07
  # @ Modified time: 2025-09-23 10:11:13
  # @ Description: side evaluation from quantitative checks and qualitative checks
+
+ MRR: mean reciprocal rank -> the closer to 1, the better
+
  '''
 import sys
 from pathlib import Path
@@ -102,6 +105,7 @@ def print_top_similar_pairs(vac, per_point_k: int = 5, top_pairs: int = 10):
         if r['text_a_snip'] and r['text_b_snip']:
             print(f"    A: {r['text_a_snip']}")
             print(f"    B: {r['text_b_snip']}")
+
 
 def write_eval_report(path: str, **sections):
     try:

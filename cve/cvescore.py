@@ -3,12 +3,26 @@
  # @ Modified time: 2025-09-23 16:36:37
  # @ Description: module to convert severity or vector-like CVE scores to numerical scores
  '''
-
+import sys
+from pathlib import Path
+sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 import math
 import re
 import json
 from pathlib import Path
-from typing import Dict, Any, Iterable
+from typing import Dict, Any, Iterable, Optional
+from cve.cveinfo import osv_cve_api
+
+def _normalize_cve_id(item: Any) -> Optional[str]:
+    """Turn a cve_list entry into a lookup string for OSV."""
+    if isinstance(item, str) and item.strip():
+        return item.strip()
+    if isinstance(item, dict):
+        for key in ("id", "name", "cve_id", "cveId"):
+            val = item.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return None
 
 def map_severity_to_score(sev: str) -> float:
     ''' it aligns with cvss31_base_score() below
@@ -112,46 +126,33 @@ def load_cve_seve_json(path: Path) -> Dict[str, str]:
     return out
 
 
-def cve_score_lookup(
-    cve_dict: str | None = None,
-    sev_str: dict | None = None,
-    ) -> float:
-    '''
-    Args:
-        cve_dict: the cve information dict from OSV or NVD
-        sev_str: optional severity string like "CRITICAL" or "HIGH"
-    
-    Priority:
-        1) map severity_str to numeric
-        2) numeric score in osv_dict
-        3) cvss31 vector in osv_dict -> compute base score
-        4) fallback 0.0
-    Expected osv_dict shape examples:
-        {"severity": [{"score": 8.8, "type": "CVSS_V3"}], ...}
-        {"severity": [{"type":"CVSS_V3","score":null,"score_vector":"CVSS:3.1/..."}], ...}
-    '''
-    if sev_str:
-        return map_severity_to_score(sev_str)
+def cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict):
+    ''' 
+    args:
+        unique_cve_ids: an iterable of unique cve ids
+        cve_agg_data_dict: the dict with cve_id -> severity_str mapping
 
-    if cve_dict:
-        sev_list = cve_dict.get("severity") or []
-        for entry in sev_list:
-            sc = entry.get("score")
-            if sc is not None:
-                try:
-                    return float(sc)
-                except Exception:
-                    pass
-        
-        for entry in sev_list:
-            vec = entry.get("score_vector") or entry.get("vectorString")
-            if not vec:
-                cvss = cve_dict.get("cvssV3") or {}
-                vec = cvss.get("vectorString")
-            if vec and isinstance(vec, str) and vec.startswith("CVSS:3.1/"):
-                try:
-                    return cvss31_base_score(vec)
-                except Exception:
-                    pass
-
-    return 0.0
+    return:
+    {
+        "CVE-2015-8031": 9.8,
+        "CVE-2016-9910": 7.5,
+        ...
+    }
+    '''
+    cve_score_dict = {}
+    # check whether the severity string is present
+    for cve_id in unique_cve_ids:
+        cve_str = cve_agg_data_dict.get(cve_id)
+        if cve_str:
+            score = map_severity_to_score(cve_str)
+            cve_score_dict[cve_id] = score
+            continue
+        else:
+            # try to fetch from osv api
+            osv_dict = osv_cve_api(cve_id)
+            try:
+                score = cvss31_base_score(osv_dict.get("score", ""))
+            except Exception:
+                pass
+            cve_score_dict[cve_id] = score
+    return cve_score_dict

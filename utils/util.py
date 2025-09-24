@@ -54,6 +54,28 @@ def _detect_graph_nodes_and_edges(graph_obj: Any) -> Tuple[Dict[str, Dict[str, A
     except Exception:
         pass
 
+def _synth_text_from_dict(cid: str, d: Dict[str, Any]) -> Optional[str]:
+    """Fallback text if OSV has no details; uses fields present on the node."""
+    sev = d.get("severity")
+    cwe = d.get("cwe_ids")
+    if isinstance(cwe, (list, tuple)):
+        cwe_str = ", ".join(map(str, cwe))
+    else:
+        cwe_str = str(cwe) if cwe else ""
+    parts = [cid]
+    if sev: parts.append(f"severity {sev}")
+    if cwe_str: parts.append(f"CWE {cwe_str}")
+    return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]
+
+
+
+def _first_nonempty(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
+
 def parse_graphml_in_chunks(file_path):
     context = etree.iterparse(file_path, events=("start", "end"))
     nodes = {}
