@@ -59,7 +59,7 @@ def build_nodeid_to_release(nodes_edges_obj: Any) -> Dict[str, Optional[str]]:
 def merge_graph_with_cves(
     dep_graph_obj: Any,
     nodeid_to_release: Mapping[str, Optional[str]],
-    cve_index: Mapping[str, List[Mapping[str, Any]]],
+    cve_index: Mapping[str, List[Mapping[str, Any]]], 
     explode: bool = False,
     compute_degrees: bool = True,
     ) -> List[CVERecord]:

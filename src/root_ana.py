@@ -6,7 +6,7 @@
 import sys 
 from pathlib import Path 
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
-from typing import Dict, Iterable, Optional, Tuple,Callable
+from typing import Dict, Iterable, Optional, Tuple,Callable, AnyStr, List, Any
 from search.vamana import VamanaOnCVE, VamanaSearch
 from cve.cvevector import CVEVector
 from cent.temp_cent import TempCentricity
@@ -15,8 +15,10 @@ import random
 from cve.cveinfo import osv_cve_api 
 from cve.cvescore import load_cve_seve_json, cve_score_dict_gen, _normalize_cve_id
 import pickle
-from utils.util import _first_nonempty, _synth_text_from_dict   
+from utils.util import _first_nonempty, _synth_text_from_dict, _median
 import argparse
+import time
+from search.sideeval import _hop_distance, _sim_from_dist
 
 
 class RootCauseAnalyzer:
@@ -75,12 +77,31 @@ class RootCauseAnalyzer:
             t_e: Optional[float] = None,
             explain: bool=True,
             cve_score_lookup: Optional[Callable[[str],float]] = None, # cve_id -> score
+            return_disgnostics: bool=False,
+            hop_mode: str="either",
         ) -> Tuple[Optional[int], Optional[int]]:
         """
-        Returns (root_community_id, root_node_id). If no nodes survive the filters, returns (None, None).
+        args:
+            query_vector: np.ndarray of shape (dim,) or (1, dim)
+            k: number of nearest neighbors to retrieve
+            t_s, t_e: time window for temporal subgraph (inclusive)
+            explain: if True, get per-node CVE explanation from Vamana
+            cve_score_lookup: function mapping cve_id -> score
+            return_diagnostics: if True, return detailed diagnostics dict
+            hop_mode: "either", "forward", "reverse", "undirected" - how to compute hop distance
+
+        Returns:
+            (root_comm, root_node) by default.
+            If return_diagnostics is True:
+                (root_comm, root_node, diagnostics_dict)        
         """
+
         # 1) search (with explain)
+        t0 = time.perf_counter()
         res = self.vamana.search(query_vector, k=k, return_explanations=explain)
+        t1 = time.perf_counter()
+        search_time_ms = (int((t1 - t0) * 1000))
+
         if explain and isinstance(res, tuple):
             neighbors, explanations = res
         else:
@@ -119,10 +140,62 @@ class RootCauseAnalyzer:
         # 6) pick root node from the chosen community
         cand_nodes = [n for n, c in comm_res.partition.items() if c == root_comm]
         root_node = max(cand_nodes, key=self._node_rank_key(cent_scores))
-        return root_comm, root_node
+
+        if not return_disgnostics:
+            return root_comm, root_node
+
+        # ---- build reliable diagnostics ----
+        
+        # a) hop distance from each neighbor to the chosen root
+        G = getattr(self.vamana, "dep_graph", None)
+        graph_hop_to_root = {}
+        for nid in neighbors:
+            graph_hop_to_root[nid] = _hop_distance(G, nid, root_node, mode=hop_mode)
+
+        diagnostics = {
+            "search_time_ms": search_time_ms,
+            "graph_hop_to_root": graph_hop_to_root,
+            "graph_hop_mode": hop_mode,
+            "chosen_root_node": root_node,
+            "chosen_root_comm": root_comm,
+        }
+
+        if explanations:
+            sims: List[float] = []
+            ngb_sims: List[Dict[str, Any]] = []
+            for nid in neighbors:
+                info = explanations.get(nid)
+                if not info:
+                    continue
+                try:
+                    best_sim_negdist = float(info.get("best_similarity"))
+                except (TypeError, ValueError):
+                    continue
+                d = -best_sim_negdist
+                sim_mapped = 1.0 / (1.0 + d)
+                sims.append(sim_mapped)
+                ngb_sims.append({
+                    "node_id": nid,
+                    "similarity": sim_mapped,
+                    "best_point_id": info.get("best_point_id"),
+                    "best_cve_id": info.get("best_cve_id"),
+                    "best_timestamp_ms": info.get("best_timestamp_ms"),
+                })
+
+            if sims:
+                diagnostics["neighbor_similarities"] = ngb_sims
+                diagnostics["similarity_summary"] = {
+                    "count": len(sims),
+                    "mean": float(sum(sims) / len(sims)),
+                    "median": _median(sims),
+                    "min": float(min(sims)),
+                    "max": float(max(sims)),
+                }
+
+        return root_comm, root_node, diagnostics
 
 
-def main(query_vec = None, k=15):
+def main(query_vec = None, explain=False, k=15, diag=False):
     # data path
     cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
     with cve_depdata_path.open('rb') as fr:
@@ -187,7 +260,6 @@ def main(query_vec = None, k=15):
     def _cve_score_lookup(cve_id: str) -> float:
         return cve_scores.get(cve_id, 0.0)
 
-    query_vec = query_vec or [random.random() for _ in range(16)]
     print("Running RootCauseAnalyzer...")
 
     root_comm, root_node = analyzer.analyze(
@@ -195,7 +267,7 @@ def main(query_vec = None, k=15):
         k=k,
         t_s=t_s,
         t_e=t_e,
-        explain=True,
+        explain=explain,
         cve_score_lookup=_cve_score_lookup,
     )
 
@@ -213,8 +285,15 @@ def main(query_vec = None, k=15):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run RootCauseAnalyzer on a query vector")
-    parser.add_argument("--query", type=float, nargs="+", help="Query vector as a list of floats")
+    parser.add_argument("--cve_id", type=str, required=True, help="cve_id to form query vector")
     parser.add_argument("--k", type=int, default=15, help="Number of nearest neighbors")
+    parser.add_argument("--diag", type=bool, default=False, help="Whether to return diagnostics")
+    parser.add_argument("--explain", type=bool, default=False, help="Whether to explain search results")
+
     args = parser.parse_args()
 
-    main(query_vec=args.query, k=args.k)
+    cve_data = osv_cve_api(args.cve_id)
+    cvevector = CVEVector()
+    emb = cvevector.encode(cve_data["details"]) 
+
+    main(query_vec=emb, k=args.k, explain = args.explain, diag=args.diag)

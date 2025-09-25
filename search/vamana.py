@@ -270,9 +270,6 @@ class VamanaOnCVE:
         return neighbors, explanations
 
 
-
-
-
 if __name__ =="__main__":
 
     # load dependency graph with cve info

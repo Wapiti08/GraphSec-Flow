@@ -12,6 +12,7 @@ sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 import json
 from typing import Iterable, Dict, List, Tuple, Optional, Any
 import numpy as np
+import networkx as nx
 
 def _sim_from_dist(d: float) -> float:
     # map Euclidean distance to a bounded similarity for readability
@@ -114,3 +115,35 @@ def write_eval_report(path: str, **sections):
         print(f"[eval] wrote report -> {path}")
     except Exception as e:
         print(f"[eval] failed to write report: {e}")
+
+def _hop_distance(G, a, b, mode: str="either"):
+    '''
+    return the hop distance between nodes a and b in graph G
+
+    mode:
+        - "forward": only follow out-edges from a
+        - "backward": only follow in-edges to a
+        - "undirected": treat as undirected
+        - "either": try first forward, then backward, then undirected
+
+    '''
+    if G is None or a is None or b is None:
+        return None
+    try:
+        if mode == "forward":
+            return nx.shortest_path_length(G, source=a, target=b)
+        if mode == "reverse":
+            return nx.shortest_path_length(G, source=b, target=a)
+        if mode == "undirected":
+            return nx.shortest_path_length(G.to_undirected(), source=a, target=b)
+        
+        # either
+        try:
+            return nx.shortest_path_length(G, source=a, target=b)
+        except Exception:
+            try:
+                return nx.shortest_path_length(G, source=b, target=a)
+            except Exception:
+                return nx.shortest_path_length(G.to_undirected(), source=a, target=b)
+    except Exception:
+        return None

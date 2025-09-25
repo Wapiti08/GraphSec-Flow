@@ -100,3 +100,10 @@ def parse_graphml_in_chunks(file_path):
             elem.clear()  # Clear memory
             
     return nodes, edges
+
+def _median(vals: List[float]) -> float:
+    if not vals:
+        return 0.0
+    s = sorted(vals)
+    n = len(s)
+    return float(s[n // 2]) if (n % 2) else float(0.5 * (s[n // 2 - 1] + s[n // 2]))
