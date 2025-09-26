@@ -17,14 +17,23 @@ class TempCentricity:
         graph: adjacency list mapping node indices to list of neighbor indices
     """
 
-    def __init__(self, graph):
+    def __init__(self, graph, search_scope):
+        '''
+        args:
+            graph: a NetworkX graph with node attribute 'timestamp'
+            search_scope: 'global' or 'local' or "auto"
+        '''
         self.graph = graph
+        self.search_scope = search_scope
 
     def _extract_temporal_subgraph(self, t_s: int, t_e: int):
         '''
         Keep nodes with t_s <= node.timestamp < t_e, then take induced subgraph.
 
         '''
+        if self.search_scope == 'global':
+            return self.graph.copy()
+
         nodes_in_window = [
             n for n, d in self.graph.nodes(data=True)
             if t_s <= int(d.get("timestamp", 0)) < t_e

@@ -22,6 +22,7 @@ import pickle
 from search.sideeval import eval_node_self_recall, print_top_similar_pairs, write_eval_report
 from utils.util import _first_nonempty, _synth_text_from_dict
 
+
 class VamanaSearch:
     """ implementation of the vamana algorithm for approximate nearest neighbor search
 

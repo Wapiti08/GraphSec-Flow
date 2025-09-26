@@ -6,7 +6,7 @@
 import sys 
 from pathlib import Path 
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
-from typing import Dict, Iterable, Optional, Tuple,Callable, AnyStr, List, Any
+from typing import Dict, Iterable, Optional, Tuple,Callable, AnyStr, List, Any, Literal
 from search.vamana import VamanaOnCVE, VamanaSearch
 from cve.cvevector import CVEVector
 from cent.temp_cent import TempCentricity
@@ -20,6 +20,7 @@ import argparse
 import time
 from search.sideeval import _hop_distance, _sim_from_dist
 
+Scope = Literal["window", "global", "auto"]
 
 class RootCauseAnalyzer:
     '''
@@ -41,12 +42,18 @@ class RootCauseAnalyzer:
         cve_scores: Dict[int, float],
         timestamps: Dict[int, float],
         centrality: TempCentricity,
+        search_scope: Scope = "auto",
         ) -> None:
+        '''
+        args:
+            timestamps: global mapping of node_id -> timestamp (float)
+        '''
 
         self.vamana = vamana
         self.cve_scores = cve_scores
         self.timestamps = timestamps
         self.centrality = centrality   
+        self.search_scope = search_scope
 
         self._detector = TemporalCommDetector(
             dep_graph=vamana.dep_graph,
@@ -54,6 +61,47 @@ class RootCauseAnalyzer:
             cve_scores=cve_scores,
             centrality_provider=centrality,
         )
+
+    
+    def _select_root_node(self, 
+                       candidates: List[str],
+                       cent_scores: Dict[int, float],
+                       scope: str = "auto", # "window", "global", "auto"
+                       ):
+        '''
+        pick a single root node from candidates using _node_rank_key
+
+        args:
+            candidates: list/iterable of node ids to consider
+            cent_scores: dict of node_id -> centrality score
+        '''
+        cent_scores = cent_scores or {}
+        candidates = list(candidates) if candidates is not None else []
+
+        if not candidates:
+            return None
+
+        # optional override scores (adjust 'cve_score' part of the key)
+        node_score_override = {}
+
+        if scope == "global" and hasattr(self, "timestamps") and self.timestamps:
+            ts_vals = [self.timestamps.get(n) for n in candidates if n in self.timestamps]
+            ts_vals = [t for t in ts_vals if t is not None]
+            if ts_vals:
+                tmin, tmax = min(ts_vals), max(ts_vals)
+                span = max(1, tmax - tmin)
+                for n in candidates:
+                    ts = self.timestamps.get(n)
+                    base = self.cve_scores.get(n, 0.0)
+                    if ts is not None:
+                        early_bonus = 0.1 * (1,0 - (ts - tmin) / span)
+                        node_score_override[n] = base + early_bonus
+                    else:
+                        node_score_override[n] = base
+
+        key_fn = self._node_rank_key(cent_scores, node_score_override or None)
+
+        return max(candidates, key=key_fn)
 
     def _node_rank_key(self, 
                        cent_scores: Dict[int, float],
@@ -195,7 +243,7 @@ class RootCauseAnalyzer:
         return root_comm, root_node, diagnostics
 
 
-def main(query_vec = None, explain=False, k=15, diag=False):
+def main(query_vec = None, search_scope='auto', explain=False, k=15, diag=False):
     # data path
     cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
     with cve_depdata_path.open('rb') as fr:
@@ -218,7 +266,7 @@ def main(query_vec = None, explain=False, k=15, diag=False):
     except KeyError:
         raise KeyError("depgraph nodes missing 'timestamp' attribute")
     
-    centrality = TempCentricity(depgraph)
+    centrality = TempCentricity(depgraph, search_scope)
     embedder = CVEVector()
 
     nodeid_to_texts = {}
@@ -287,6 +335,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run RootCauseAnalyzer on a query vector")
     parser.add_argument("--cve_id", type=str, required=True, help="cve_id to form query vector")
     parser.add_argument("--k", type=int, default=15, help="Number of nearest neighbors")
+    parser.add_argument("--scope", choices=["window", "global", "auto"], default="auto", help="Search only in window, globally, or auto")
     parser.add_argument("--diag", type=bool, default=False, help="Whether to return diagnostics")
     parser.add_argument("--explain", type=bool, default=False, help="Whether to explain search results")
 
@@ -296,4 +345,4 @@ if __name__ == "__main__":
     cvevector = CVEVector()
     emb = cvevector.encode(cve_data["details"]) 
 
-    main(query_vec=emb, k=args.k, explain = args.explain, diag=args.diag)
+    main(query_vec=emb, k=args.k, search_scope=args.scope, explain = args.explain, diag=args.diag)
