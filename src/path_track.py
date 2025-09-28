@@ -41,7 +41,8 @@ import networkx as nx
 from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_json
 from utils.util import _detect_graph_nodes_and_edges, to_undirected_graph
 from src.root_ana import RootCauseAnalyzer
-
+from cent.temp_cent import TempCentricity
+from cve.cvescore import load_cve_seve_json, cve_score_dict_gen, _normalize_cve_id
 
 
 # ----------------- Scoring -----------------
@@ -477,7 +478,31 @@ def main():
     sim_scores = _safe_load_json(args.similarity_json) if args.similarity_json else None
 
     # ---- Instantiate analyzer ----
-    rcp = RootCausePathAnalyzer(depgraph=graph_obj)
+    # load initial parameters
+
+    nodes = list(graph_obj.nodes)
+    depgraph = graph_obj if isinstance(graph_obj, nx.Graph) else None
+
+    unique_cve_ids = {
+        cid for _, attrs in depgraph.nodes(data=True) 
+        for cid in ([_normalize_cve_id(x) for x in (attrs.get("cve_list") or [])])
+        if cid
+    }
+
+    cve_agg_data_dict_path = Path.cwd().parent.joinpath("data", "aggregated_data.json")
+    cve_agg_data_dict = load_cve_seve_json(cve_agg_data_dict_path)
+    cve_scores = cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict)
+
+    try:
+        timestamps = {n: float(depgraph.nodes[n]["timestamp"]) for n in nodes}
+    except KeyError:
+        raise KeyError("depgraph nodes missing 'timestamp' attribute")
+    
+    centrality = TempCentricity(depgraph, "auto")
+
+    rcp = RootCausePathAnalyzer(depgraph=graph_obj,cve_scores=cve_scores,
+                            timestamps=timestamps,
+                            centrality=centrality,)
 
     # ----- Build Path Config -----
     path_cfg = PathConfig(
