@@ -125,8 +125,10 @@ class RootCauseAnalyzer:
             t_e: Optional[float] = None,
             explain: bool=True,
             cve_score_lookup: Optional[Callable[[str],float]] = None, # cve_id -> score
-            return_disgnostics: bool=False,
+            return_diagnostics: bool=False,
             hop_mode: str="either",
+            search_scope: Scope = "auto",
+            **kwargs
         ) -> Tuple[Optional[int], Optional[int]]:
         """
         args:
@@ -143,6 +145,8 @@ class RootCauseAnalyzer:
             If return_diagnostics is True:
                 (root_comm, root_node, diagnostics_dict)        
         """
+        if "return_disgnostics" in kwargs:  # backward compat
+            return_diagnostics = kwargs.pop("return_disgnostics") or return_diagnostics
 
         # 1) search (with explain)
         t0 = time.perf_counter()
@@ -166,30 +170,78 @@ class RootCauseAnalyzer:
                     except Exception as e:
                         pass
 
-        # 3) temporal subgraph
-        temp_subgraph = self._detector.extract_temporal_subgraph(t_s, t_e, neighbors)
-        if temp_subgraph.number_of_nodes() == 0:
-            return None, None
+        # 3) scope-aware temporal subgraph
+        def _extract_by_scope(scope: Scope):
+            if scope == "global":
+                return self._detector.extract_temporal_subgraph(None, None, neighbors)
+            return self._detector.extract_temporal_subgraph(t_s, t_e, neighbors)
+        
+        scopes_to_try = ["window"] if search_scope=="window" else \
+            ["global"] if search_scope=="global" else \
+            ["window", "global"]
 
+        temp_subgraph = None
+        used_scope: Scope = "window"
+        for sc in scopes_to_try:
+            used_scope = sc  # type: ignore
+            temp_subgraph = _extract_by_scope(sc)  # type: ignore
+            if temp_subgraph is not None and temp_subgraph.number_of_nodes() > 0:
+                break
+        
+        if temp_subgraph is None or temp_subgraph.number_of_nodes() == 0:
+            if return_diagnostics:
+                return None, None, {
+                    "search_time_ms": search_time_ms,
+                    "reason": "empty_temporal_subgraph",
+                    "scope_tried": scopes_to_try,
+                    "window": {"t_s": t_s, "t_e": t_e},
+                }
+            return None, None
+        
         # 4) communities
         comm_res = self._detector.detect_communities(temp_subgraph)
         if not comm_res.comm_to_nodes:
+            if return_diagnostics:
+                return None, None, {
+                    "search_time_ms": search_time_ms,
+                    "reason": "no_communities",
+                    "used_scope": used_scope,
+                }
+            
             return None, None
 
         # 5) score communities
         root_comm, cent_scores = self._detector.choose_root_community(
             comm_to_nodes=comm_res.comm_to_nodes,
-            t_s=t_s,
-            t_e=t_e,
+            t_s=t_s if used_scope=="window" else None,
+            t_e=t_e if used_scope=="window" else None,
         )
+
         if root_comm is None:
-            return None, None
+                if return_diagnostics:
+                    return None, None, {
+                        "search_time_ms": search_time_ms,
+                        "reason": "no_root_comm",
+                        "used_scope": used_scope,
+                    }
+                return None, None
 
-        # 6) pick root node from the chosen community
+        # 6) pick root node (global-aware tie-break optional)
+        rank_key = self._node_rank_key(cent_scores)
+
+        def global_aware_key(nid: int):
+            base = rank_key(nid)
+            if used_scope == "global":
+                ts = getattr(self._detector, "timestamp", lambda _ : None)(nid)
+                if ts is not None:
+                    return (base, -float(ts))
+            return (base, 0.0)
+
+
         cand_nodes = [n for n, c in comm_res.partition.items() if c == root_comm]
-        root_node = max(cand_nodes, key=self._node_rank_key(cent_scores))
+        root_node = max(cand_nodes, key=global_aware_key)
 
-        if not return_disgnostics:
+        if not return_diagnostics:
             return root_comm, root_node
 
         # ---- build reliable diagnostics ----
@@ -243,7 +295,7 @@ class RootCauseAnalyzer:
         return root_comm, root_node, diagnostics
 
 
-def main(query_vec = None, search_scope='auto', explain=False, k=15, diag=False):
+def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True):
     # data path
     cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
     with cve_depdata_path.open('rb') as fr:
@@ -336,8 +388,8 @@ if __name__ == "__main__":
     parser.add_argument("--cve_id", type=str, required=True, help="cve_id to form query vector")
     parser.add_argument("--k", type=int, default=15, help="Number of nearest neighbors")
     parser.add_argument("--scope", choices=["window", "global", "auto"], default="auto", help="Search only in window, globally, or auto")
-    parser.add_argument("--diag", type=bool, default=False, help="Whether to return diagnostics")
-    parser.add_argument("--explain", type=bool, default=False, help="Whether to explain search results")
+    parser.add_argument("--diag", type=bool, default=True, help="Whether to return diagnostics")
+    parser.add_argument("--explain", type=bool, default=True, help="Whether to explain search results")
 
     args = parser.parse_args()
 

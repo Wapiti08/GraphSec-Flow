@@ -53,6 +53,9 @@ class TemporalCommDetector:
         if t_e is None:
             t_e = float("inf")
 
+        if t_s == float("-inf") and t_e == float("inf"):
+            return self.dep_graph.copy()
+
         allowed_nodes = {
             n for n in node_whitelist
             if (n in self.timestamps) and (t_s <= self.timestamps[n] <= t_e)
@@ -89,6 +92,14 @@ class TemporalCommDetector:
         # earlier (smaller) timestamps should increase priority -> subtract min timestamp
         min_ts = min(self.timestamps.get(n, float("inf")) for n in nodes)
         return cve_sum + cent_sum - min_ts
+    
+    def timestamp_of(self, nid):
+        data = self.dep_graph.nodes.get(nid, {})
+        ts = data.get("timestamp")
+        if ts:
+            return float(ts)
+        else:
+            return None
 
     def choose_root_community(
         self,

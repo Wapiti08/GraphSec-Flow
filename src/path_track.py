@@ -3,7 +3,6 @@
  # @ Modified time: 2024-09-19 15:43:34
  # @ Description: modules to identity vulnerablity propagation paths
 
- 
     Read an already ENRICHED dependency graph (augmented pickle) that contains
       node attrs: release, has_cve, cve_count, cve_list, timestamp (and any others)
 
@@ -34,56 +33,16 @@ import sys
 from pathlib import Path
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 import argparse
-import json
+from dataclasses import dataclass
 import pickle
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 
 import networkx as nx
 from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_json
 from utils.util import _detect_graph_nodes_and_edges, to_undirected_graph
+from src.root_ana import RootCauseAnalyzer
 
 
-# --------- build temporal graph ----------
-def build_temporal_digraph(
-      G_undirected: nx.Graph,
-      strict_increase: bool=False,
-      t_start: Optional[float] = None,
-      t_end: Optional[float] = None
-    ) -> nx.DiGraph:
-    ''' build a temporal directed graph (DAG) from an undirected dependency graph
-    
-    Each node must carry a numeric 'timestamp' attribute. For any undirected
-      edge {u, v}, we add directed edges according to timestamps:
-    '''
-    if t_start is None: t_start = float('-inf')
-    if t_end is None: t_end = float('inf')
-
-    # filter nodes by timestamp presence + range
-    allowed = []
-    for n, d in G_undirected.nodes(data=True):
-        if 'timestamp' in d:
-            ts = d['timestamp']
-            if t_start <= ts <= t_end:
-                allowed.append(n)
-
-    D = nx.DiGraph()
-    for n in allowed:
-        D.add_node(n, **G_undirected.nodes[n])
-      
-    for u, v in G_undirected.subgraph(allowed).edges():
-        tsu = G_undirected.nodes[u].get("timestamp")
-        tsv = G_undirected.nodes[v].get('timestamp')
-
-        if tsu is None or tsv is None:
-            continue
-        if strict_increase:
-            if tsu < tsv: D.add_edge(u, v, time_lag = tsv - tsu)
-            if tsv < tsu: D.add_edge(v, u, time_lag = tsu - tsv)
-        else:
-            if tsu <= tsv: D.add_edge(u, v, time_lag = tsv - tsu)
-            if tsv <= tsu: D.add_edge(v ,u, time_lag = tsu - tsv)
-    
-    return D
 
 # ----------------- Scoring -----------------
 SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
@@ -273,97 +232,309 @@ def summarize_path(D: nx.DiGraph, path: List[str]) -> dict:
         'max_severity': max_sev
         }
 
-def main():
-    ''' compute propagation paths from an enriched graph
 
+@dataclass
+class PathConfig:
+    # temporal & weighting
+    t_start: Optional[float] = None
+    t_end: Optional[float] = None
+    strict_increase: bool = False
+    alpha: float = 1.0
+    beta: float = 0.0
+    gamma: float = 0.0
+    blend_lambda: float = 0.7
+    k_paths: int = 3
+    targets: Optional[List[str]] = None
+    similarity_scores: Optional[Mapping[str, float]] = None
+
+
+class RootCausePathAnalyzer(RootCauseAnalyzer):
+    '''
+    succeed RootCauseAnalyzer to compute propagation paths:
+        1) Root cause identificatoin
+        2) Use root cause as source to compute shorted paths to targets
+        3) optionally write paths and subgraphs to files
+    '''
+    def __init__(self, depgraph: Any, *args, **kwargs):
+        super().__init__(depgraph, *args, **kwargs)
+
+        self._last_root_node: Optional[str] = None
+        self._last_paths: Optional[Dict[str, List[List[str]]]] = None
+        self._last_D: Optional[nx.DiGraph] = None
+
+    # --------- build temporal graph ----------
+    def build_temporal_digraph(
+        self,
+        G_undirected: nx.Graph,
+        strict_increase: bool=False,
+        t_start: Optional[float] = None,
+        t_end: Optional[float] = None
+        ) -> nx.DiGraph:
+        ''' build a temporal directed graph (DAG) from an undirected dependency graph
+        
+        Each node must carry a numeric 'timestamp' attribute. For any undirected
+        edge {u, v}, we add directed edges according to timestamps:
+        '''
+        if t_start is None: t_start = float('-inf')
+        if t_end is None: t_end = float('inf')
+
+        # filter nodes by timestamp presence + range
+        allowed = []
+        for n, d in G_undirected.nodes(data=True):
+            if 'timestamp' in d:
+                ts = d['timestamp']
+                if t_start <= ts <= t_end:
+                    allowed.append(n)
+
+        D = nx.DiGraph()
+        for n in allowed:
+            D.add_node(n, **G_undirected.nodes[n])
+        
+        for u, v in G_undirected.subgraph(allowed).edges():
+            tsu = G_undirected.nodes[u].get("timestamp")
+            tsv = G_undirected.nodes[v].get('timestamp')
+
+            if tsu is None or tsv is None:
+                continue
+            if strict_increase:
+                if tsu < tsv: D.add_edge(u, v, time_lag = tsv - tsu)
+                if tsv < tsu: D.add_edge(v, u, time_lag = tsu - tsv)
+            else:
+                if tsu <= tsv: D.add_edge(u, v, time_lag = tsv - tsu)
+                if tsv <= tsu: D.add_edge(v ,u, time_lag = tsu - tsv)
+        
+        return D
+
+    # ---------- compute paths based on root cause -----------
+    def _compute_paths_from_source(
+            self,
+            source: str,
+            cfg: PathConfig    
+        ) -> Tuple[nx.DiGraph, Dict[str, List[List[str]]]]:
+
+        dep = self.depgraph
+        # 1) get undirected graph
+        if isinstance(dep, nx.Graph):
+            G_und = dep if not isinstance(dep, nx.DiGraph) else dep.to_undirected()
+        elif isinstance(dep, dict) and "nodes" in dep and "edges" in dep:
+            G_und = to_undirected_graph(dep['nodes'], dep['edges'])
+        else:
+            raise ValueError("Unsupported depgraph format")
+    
+        # 2) build temporal graph
+        D = self._build_temporal_digraph(
+                G_und,
+                strict_increase=cfg.strict_increase,
+                t_start=cfg.t_start,
+                t_end=cfg.t_end
+            )
+
+        if source not in D:
+            raise ValueError(f"Root cause source={source} not present in temporal window")
+
+        # 3) get target set
+        if cfg.targets and len(cfg.targets) > 0:
+            targets = [t for t in cfg.targets if t in D and t != source]
+        else:
+            # choose nodes without outgoing edges (leaf nodes)
+            targets = [n for n in D.nodes if D.out_degree(n) == 0 and n != source]
+        
+        # 4) compute weights
+        centrality = nx.degree_centrality(D) if cfg.beta != 0.0 else None
+        node_scores = build_node_scores(D, similarity_scores=cfg.similarity_scores, 
+                                        blend_lambda=cfg.blend_lambda) if cfg.gamma != 0.0 else None
+        attach_edge_weights(D, alpha=cfg.alpha, beta=cfg.beta, gamma=cfg.gamma,
+                            centrality=centrality, node_scores=node_scores)
+        
+        # 5) K shortest paths
+        paths_by_t = k_shortest_paths(D, source, targets, k=cfg.k_paths)
+        return D, paths_by_t
+
+    # ------- entry point: root cause + path --------
+    def analyze_with_paths(
+            self,
+            k_neighbors: int = 15,
+            t_start: Optional[float] = None,
+            t_end: Optional[float] = None,
+            path_cfg: Optional[PathConfig] = None,
+            explain: bool = False
+            ):
+        ''' 
+        Identify root cause, then compute propagation paths from it.
+
+        return: (root_comm, root_node, D, paths_by_target, records)
+        records: list of path summaries
+        '''
+        # 1) root cause
+        root_comm, root_node = self.analyze(
+                                    query_vector=getattr(self, "query_vector", None),
+                                    k=int(k_neighbors), 
+                                    t_start=t_start, t_end=t_end, 
+                                    explain=explain)
+        if not root_node:
+            return None, None, None, {}
+        
+        # 2) paths
+        cfg = path_cfg if path_cfg else PathConfig()
+        # align with overall t_start/t_end
+        if cfg.t_start is None:
+            cfg.t_start = t_start
+        if cfg.t_end is None:
+            cfg.t_end = t_end
+        
+        D, paths_by_t = self._compute_paths_from_source(root_node, cfg)
+
+        # 3) generate summaries
+        records: List[Dict[str, Any]] = []
+        for t, paths in paths_by_t.items():
+            for i, p in enumerate(paths, 1):
+                s = summarize_path(D, p)
+                total_w = 0.0
+                for u, v in zip(p[:-1], p[1:]):
+                    total_w += float(D[u][v].get('weight', 0.0))
+                rec = {
+                    'target': t,
+                    'rank': i,
+                    'score': total_w,
+                    'path': p,
+                    "length": s['length'],
+                    'total_cves': s['total_cves'],
+                    'max_severity': s['max_severity']
+                }
+                records.append(rec)
+
+        # cache latest results for retrieval
+        self._last_root_node = root_node
+        self._last_paths = paths_by_t
+        self._last_D = D
+
+        return root_comm, root_node, D, paths_by_t, records
+
+    def export_jsonl(self, records: List[Dict[str, Any]], filepath: str) -> None:
+        ''' write path summaries to JSONL file '''
+        import json
+        with open(filepath, 'w', encoding="utf-8") as f:
+            for r in sorted(records, key=lambda r: (r['target'], r['score'])):
+                f.write(json.dumps(r, ensure_ascii=False) + "\n")
+        
+    def export_subgraph_gexf(self, out_path: str):
+        if self._last_D is None or self._last_paths is None:
+            raise RuntimeError("No computed paths available to export.")
+    
+        H = nx.DiGraph()
+        # union-of-paths
+        for paths in self._last_paths.values():
+            for p in paths:
+                for n in p:
+                    if n not in H:
+                        H.add_node(n, **self._last_D.nodes[n])
+                for u, v in zip(p[:-1], p[1:]):
+                    if not H.has_edge(u, v):
+                        H.add_edge(u, v, **self._last_D[u][v])
+        nx.write_gexf(H, out_path)
+
+def main():
+    ''' 
+    Unified entry:
+      - If --source is provided: compute paths from explicit source.
+      - Else: run RootCause analysis first, then compute propagation paths from the root.
     '''
     ap = argparse.ArgumentParser(description='Propagation paths from an already-enriched dependency graph.')
+    # ---- I/O ----
     ap.add_argument('--aug_graph', required=True, help='Augmented graph pickle with CVE attributes')
-    ap.add_argument('--source', help='Root/source node_id (optional if --auto-source is provided)')
-    ap.add_argument("--auto_source", choices=['earliest', 'indegree0', 'earliest_cve','top_sim'],
-                   default='earliest_cve',
-                    help='Auto-select source strategy when --source is not provided (default: earliest_cve)')
+    ap.add_argument('--similarity_json', default=None, help='Optional node_id -> similarity score JSON')
+    ap.add_argument("--paths_jsonl", help="Write path summaries to JSONL")
+    ap.add_argument('--subgraph_gexf', help='Write union-of-paths subgraph (GEXF)')
 
-    ap.add_argument('--targets', nargs='*', help='Optional explicit target node_ids')
+    # ----- Time Window (shared) ------
+    ap.add_argument('--t_start', type=float, help='Timestamp lower bound (inclusive)')
+    ap.add_argument('--t_end', type=float, help="Timestamp upper bound (inclusive)")
+    ap.add_argument("--strict_increase", action='store_true', help='Require strictly increasing timestamps')
+
+    # ----- Path Weighting -----
     ap.add_argument('--k', type=int, default=3, help ='Top-k paths per target')
     ap.add_argument('--alpha', type=float, default=1.0, help='Weight for time lag')
     ap.add_argument('--beta', type=float, default=0.0, help='Weight for centrality inverse')
     ap.add_argument('--gamma', type=float, default=0.0, help='Weight for node score inverse')
     ap.add_argument('--blend_lambda', type=float, default=0.7, help='Blend sim vs severity (if similarity-json provided)')
-    ap.add_argument('--similarity_json', default=None, help='Optional node_id -> similarity score JSON')
-    ap.add_argument('--t_start', type=float, help='Timestamp lower bound (inclusive)')
-    ap.add_argument('--t_end', type=float, help="Timestamp upper bound (inclusive)")
-    ap.add_argument("--strict_increase", action='store_true', help='Require strictly increasing timestamps')
-    ap.add_argument("--paths_jsonl", help="Write path summaries to JSONL")
-    ap.add_argument('--subgraph_gexf', help='Write union-of-paths subgraph (GEXF)')
-    ap.add_argument('--tree_gexf', help='Write arborescence (GEXF)')
+
+    # ----- Source & Targets -----
+    ap.add_argument("--auto_source", choices=['earliest', 'indegree0', 'earliest_cve','top_sim'],
+                   default='earliest_cve',
+                    help='Auto-select source strategy when --source is not provided (default: earliest_cve)')
+    ap.add_argument('--targets', nargs='*', help='Optional explicit target node_ids')
+
+    # ---- Root-cause options ----
+    ap.add_argument('--source', help='Root/source node_id (optional if --auto-source is provided)')
+    ap.add_argument('--rca_k', type=int, default=15, help='Top-K neighborhood for root cause analysis')
+    ap.add_argument('--rca_explain', action='store_true', help='Verbose explain for root cause step')
+
+
     args = ap.parse_args()
 
     # load graph
     graph_obj = _safe_load_pickle(Path(args.aug_graph))
-    nodes, edges = _detect_graph_nodes_and_edges(graph_obj)
-
-    # build undirected then temporal
-    G_und = to_undirected_graph(nodes, edges)
-    D = build_temporal_digraph(G_und,
-                               strict_increase=args.strict_increase,
-                               t_start = args.t_start,
-                               t_end = args.t_end)
-    
-    # auto-select source if needed
     sim_scores = _safe_load_json(args.similarity_json) if args.similarity_json else None
+
+    # ---- Instantiate analyzer ----
+    rcp = RootCausePathAnalyzer(depgraph=graph_obj)
+
+    # ----- Build Path Config -----
+    path_cfg = PathConfig(
+        t_start=args.t_start,
+        t_end=args.t_end,
+        strict_increase=bool(args.strict_increase),
+        alpha=float(args.alpha),
+        beta=float(args.beta),
+        gamma=float(args.gamma),
+        blend_lambda=float(args.blend_lambda),
+        k_paths=int(args.k_paths),
+        targets=args.targets if args.targets else None,
+        similarity_scores=sim_scores
+    )
+
+    # auto-select source if needed
     source = args.source
-    if not source:
-        source = select_auto_source(D, strategy=args.auto_source, similarity_scores=sim_scores)
-        if not source:
-            raise SystemExit('Failed to auto-select a source node. Please provide --source explicitly.')
-        print(f"[auto-source] strategy={args.auto_source} -> source={source}")
-    
-    if source not in D:
-        raise SystemExit(f"Source {source} not in temporal graph (possibly filtered by time range).")
+    if source:
+        # explicit source mode
+        try:
+            D, paths_by_t = rcp._compute_paths_from_source(source, path_cfg)
+        except ValueError as e:
+            raise SystemError(str(e))
+        # summaries
+        records: List[Dict[str, Any]] = []
 
-    # target default: leaf nodes
-    if args.targets:
-        targets = [t for t in args.targets if t in D and t != source]
+        for t, paths in paths_by_t.items():
+            for i, p in enumerate(paths, 1):
+                s = summarize_path(D, p)
+                total_w = 0.0
+                for u, v in zip(p[:-1], p[1:]):
+                    total_w += float(D[u][v].get('weight', 0.0))
+                records.append({
+                    'target': t,
+                    'rank': i,
+                    'score': total_w,
+                    'path': p,
+                    'length': s['length'],
+                    'total_cves': s['total_cves'],
+                    'max_severity': s['max_severity']
+                })
+        root_comm, root_node = None, args.source
+
     else:
-        targets = [n for n in D.nodes if D.out_degree(n) == 0 and n != source]
+        # root-cause first, then paths
+        result = rcp.analyze_with_paths(
+            k_neighbors=int(args.rca_k),
+            t_start=args.t_start,
+            t_end=args.t_end,
+            path_cfg=path_cfg,
+            explain=bool(args.rca_explain)
+        )
+        if not result or result[1] is None:
+            raise SystemExit("Root cause not found within the given constraints.")
+        root_comm, root_node, D, paths_by_t, records = result
 
-    # optional centrality
-    centrality = nx.degree_centrality(D) if args.beta != 0.0 else None
-
-    # Node scores from similarity or severity
-    node_scores = build_node_scores(D, similarity_scores=sim_scores, blend_lambda=args.blend_lambda)
-
-    # Attach weights & compute paths
-    attach_edge_weights(D, alpha=args.alpha, beta=args.beta, gamma=args.gamma,
-                    centrality=centrality, node_scores=node_scores)
-    
-    paths_by_t = k_shortest_paths(D, source, targets, k=args.k)
-
-    if not paths_by_t:
-        print('No paths found from source to any target within constraints.')
-        return
-    
-    # summaries
-    records = []
-    for t, paths in paths_by_t.items():
-        for i, p in enumerate(paths, 1):
-            s = summarize_path(D, p)
-            total_w = 0.0
-            for u, v in zip(p[:-1], p[1:]):
-                total_w += float(D[u][v].get('weight', 0.0))
-            rec = {
-                'target': t,
-                'rank': i,
-                'score': total_w,
-                'path': p,
-                "length": s['length'],
-                'total_cves': s['total_cves'],
-                'max_severity': s['max_severity']
-            }
-            records.append(rec)
-    
-    # Console preview
+    # ---------- Console Preview -----------
     if not records:
         print('No paths found within constraints.')
     else:
@@ -371,7 +542,7 @@ def main():
         for r in records[:min(len(records), 50)]:
             print(f"target={r['target']} rank={r['rank']} score={r['score']:.3f} length={r['length']} total_cves={r['total_cves']} max_severity={r['max_severity']}\\n  path={' -> '.join(r['path'])}")
     
-    # Files
+    # ------- Export ------------
     if args.paths_jsonl:
         _safe_save_json(records, args.paths_jsonl)
       
@@ -388,30 +559,6 @@ def main():
                     H.add_edge(u, v, **D[u][v])
         nx.write_gexf(H, args.subgraph_gexf)
         
-    if args.tree_gexf:
-        # compress to a branching (optional)
-        H = nx.DiGraph()
-        for r in records:
-            p = r['path']
-            for n in p:
-                if n not in H:
-                    H.add_node(n, **D.nodes[n])
-            for u, v in zip(p[:-1], p[1:]):
-                if not H.has_edge(u, v):
-                    H.add_edge(u, v, **D[u][v])
-        W = nx.DiGraph()
-        for n, d in H.nodes(data=True):
-            W.add_node(n, **d)
-        for u, v, d in H.edges(data=True):
-            w = float(d.get('weight', 0.0))
-            W.add_edge(u, v, weight=-w)
-        try:
-            B = nx.maximum_branching(W, preserve_attrs=True)
-            reachable = nx.descendants(B, source) | {source}
-            T = B.subgraph(reachable).copy()
-            nx.write_gexf(T, args.tree_gexf)
-        except Exception:
-            nx.write_gexf(H, args.tree_gexf)
 
 if __name__ == '__main__':
     main()

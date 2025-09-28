@@ -76,8 +76,16 @@ pip3 install -r requirmentst.txt
 cd cve
 python3 graph_cve.py --dep_graph {your local path}/data/dep_graph.pkl --cve_json {your local path}/data/aggregated_data.json --nodes_pkl {your local path}/data/graph_nodes_edges.pkl --augment_graph {your local path}/data/dep_graph_cve.pkl
 ```
+ 
+- Root Cause Analysis
+```
+python3 root_ana.py --cve_id "BIT-jenkins-2023-36478"
+```
 
-- 
+- Root Cause Path Analysis
+```
+python3 path_track.py --aug_graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl --paths_jsonl /workspace/GraphSec-Flow/result/result.json --subgraph_gexf  /workspace/GraphSec-Flow/result/result.gexf --t_start 1585228864000 --t_end 1638395026000
+```
 
 
 ## Statistical Analysis (extra material)
