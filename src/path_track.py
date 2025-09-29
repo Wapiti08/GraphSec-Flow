@@ -40,10 +40,13 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 import networkx as nx
 from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_json
 from utils.util import _detect_graph_nodes_and_edges, to_undirected_graph
-from src.root_ana import RootCauseAnalyzer
+from src.root_ana import RootCauseAnalyzer, Scope
 from cent.temp_cent import TempCentricity
 from cve.cvescore import load_cve_seve_json, cve_score_dict_gen, _normalize_cve_id
-
+from utils.util import _first_nonempty, _synth_text_from_dict, _median
+from search.vamana import VamanaOnCVE, VamanaSearch
+from cve.cvevector import CVEVector
+from cve.cveinfo import osv_cve_api 
 
 # ----------------- Scoring -----------------
 SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
@@ -256,9 +259,25 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
         2) Use root cause as source to compute shorted paths to targets
         3) optionally write paths and subgraphs to files
     '''
-    def __init__(self, depgraph: Any, *args, **kwargs):
-        super().__init__(depgraph, *args, **kwargs)
-
+    def __init__(self,         
+                 depgraph: Any,
+                vamana: VamanaOnCVE,
+                cve_scores: Dict[int, float],
+                timestamps: Dict[int, float],
+                centrality: TempCentricity,
+                search_scope: Scope = "auto",):
+        
+        self.depgraph = depgraph
+        # # Explicitly pass in the parent class's required parameters by keyword
+        # (do not pass depgraph to super)
+        super().__init__(
+                    vamana=vamana,
+                    cve_scores=cve_scores,
+                    timestamps=timestamps,
+                    centrality=centrality,
+                    search_scope=search_scope,
+                )
+        
         self._last_root_node: Optional[str] = None
         self._last_paths: Optional[Dict[str, List[List[str]]]] = None
         self._last_D: Optional[nx.DiGraph] = None
@@ -470,7 +489,6 @@ def main():
     ap.add_argument('--rca_k', type=int, default=15, help='Top-K neighborhood for root cause analysis')
     ap.add_argument('--rca_explain', action='store_true', help='Verbose explain for root cause step')
 
-
     args = ap.parse_args()
 
     # load graph
@@ -499,10 +517,41 @@ def main():
         raise KeyError("depgraph nodes missing 'timestamp' attribute")
     
     centrality = TempCentricity(depgraph, "auto")
+    embedder = CVEVector()
 
-    rcp = RootCausePathAnalyzer(depgraph=graph_obj,cve_scores=cve_scores,
+    nodeid_to_texts = {}
+    TEXT_KEYS = ["details", "summary", "description"]
+
+    for nid, attrs in depgraph.nodes(data=True):
+        raw_list = attrs.get("cve_list", []) or []
+        texts = []
+        for raw in raw_list:
+            cid = _normalize_cve_id(raw)
+            try:
+                rec = osv_cve_api(cid) or {}
+            except Exception as e:
+                rec = {"_error": str(e)}
+            text = _first_nonempty(rec, TEXT_KEYS)
+            if not text and isinstance(raw, dict):
+                text = _synth_text_from_dict(cid, raw)
+            texts.append(text)
+        if texts:
+            nodeid_to_texts[nid] = texts
+
+    if not nodeid_to_texts:
+        raise RuntimeError("No CVE texts found.")
+    
+    ann = VamanaSearch()
+
+    vamana = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
+
+    rcp = RootCausePathAnalyzer(
+                            depgraph=graph_obj, 
+                            vamana = vamana,
+                            cve_scores=cve_scores,
                             timestamps=timestamps,
-                            centrality=centrality,)
+                            centrality=centrality,
+                            search_scope="auto")
 
     # ----- Build Path Config -----
     path_cfg = PathConfig(
@@ -564,9 +613,15 @@ def main():
         print('No paths found within constraints.')
     else:
         records.sort(key=lambda r: (r['target'], r['score']))
-        for r in records[:min(len(records), 50)]:
-            print(f"target={r['target']} rank={r['rank']} score={r['score']:.3f} length={r['length']} total_cves={r['total_cves']} max_severity={r['max_severity']}\\n  path={' -> '.join(r['path'])}")
-    
+        limit = min(len(records), 50)
+        print(f"[root] source={root_node} (community={root_comm})" if root_node else "[root] source=<explicit>")
+        for r in records[:limit]:
+            print(
+                f"target={r['target']} rank={r['rank']} score={r['score']:.3f} "
+                f"length={r['length']} total_cves={r['total_cves']} max_severity={r['max_severity']}\n"
+                f"  path={' -> '.join(r['path'])}"
+            )
+
     # ------- Export ------------
     if args.paths_jsonl:
         _safe_save_json(records, args.paths_jsonl)
