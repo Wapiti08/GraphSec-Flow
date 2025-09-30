@@ -47,6 +47,7 @@ from utils.util import _first_nonempty, _synth_text_from_dict, _median
 from search.vamana import VamanaOnCVE, VamanaSearch
 from cve.cvevector import CVEVector
 from cve.cveinfo import osv_cve_api 
+from wins.timeline_links import build_interwins_links
 
 # ----------------- Scoring -----------------
 SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
@@ -149,7 +150,7 @@ def k_shortest_paths(D: nx.DiGraph, source: str,
                 out[t] = paths
         except (nx.NetworkXNoPath, nx.NodeNotFound):
                 pass
-        return out
+    return out
 
 def severity_rank(sev: Optional[str]) -> int:
     ''' convert severity string to an integer rank for comparisons
@@ -342,7 +343,7 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
             raise ValueError("Unsupported depgraph format")
     
         # 2) build temporal graph
-        D = self._build_temporal_digraph(
+        D = self.build_temporal_digraph(
                 G_und,
                 strict_increase=cfg.strict_increase,
                 t_start=cfg.t_start,
@@ -453,6 +454,9 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
                         H.add_edge(u, v, **self._last_D[u][v])
         nx.write_gexf(H, out_path)
 
+    def interwindow_links(self, windows, window_results):
+        return build_interwins_links(self.depgraph, self.timestamps, windows, window_results)
+
 def main():
     ''' 
     Unified entry:
@@ -472,7 +476,7 @@ def main():
     ap.add_argument("--strict_increase", action='store_true', help='Require strictly increasing timestamps')
 
     # ----- Path Weighting -----
-    ap.add_argument('--k', type=int, default=3, help ='Top-k paths per target')
+    ap.add_argument('--k_paths', type=int, default=3, help ='Top-k paths per target')
     ap.add_argument('--alpha', type=float, default=1.0, help='Weight for time lag')
     ap.add_argument('--beta', type=float, default=0.0, help='Weight for centrality inverse')
     ap.add_argument('--gamma', type=float, default=0.0, help='Weight for node score inverse')

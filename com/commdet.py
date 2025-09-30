@@ -71,15 +71,22 @@ class TemporalCommDetector:
 
     def detect_communities(self, subgraph: nx.Graph) -> CommunityResult:
         """Run Louvain on the provided subgraph and return the node->community mapping and reverse index."""
-        if subgraph.number_of_edges() == 0:
+        if subgraph.number_of_nodes() == 0:
             return CommunityResult(partition={}, comm_to_nodes={})
         
+        if subgraph.number_of_edges() == 0:
+            # make the single node its own community
+            partition = {n: i for i, n in enumerate(subgraph.nodes())}
+            comm_to_nodes = {i: [n] for i, n in enumerate(subgraph.nodes())}
+            return CommunityResult(partition=partition, comm_to_nodes=comm_to_nodes)
+
         partition = community_louvain.best_partition(subgraph)
         comm_to_nodes: Dict[int, List[int]] = {}
         for node, comm in partition.items():
             comm_to_nodes.setdefault(comm, []).append(node)
         
         return CommunityResult(partition=partition, comm_to_nodes=comm_to_nodes)
+    
     
     # --------- scoring ---------
     def _community_score(

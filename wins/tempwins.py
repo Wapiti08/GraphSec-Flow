@@ -168,6 +168,10 @@ def agg_network_influence(pr_scores: dict, method="topk_mean", k =5):
 def slide_windows_from_node_tms(G, win_size, win_step):
     ''' generate sliding windows using node timestamps
     
+    args:
+        G: nx.Graph with node attribute 'timestamp'
+        win_size: size of each window (int)
+        win_step: step size between windows (int)
     '''
     ts_all = sorted(int(d.get("timestamp", 0)) for _, d in G.nodes(data=True))
     if not ts_all:
@@ -197,6 +201,7 @@ if __name__ == "__main__":
     # define time window for sliding windows
     WIN_SIZE = 30
     WIN_STEP = 10
+    
     windows = slide_windows_from_node_tms(depgraph, WIN_SIZE, WIN_STEP)
     if not windows:
         raise RuntimeError("No timestamps found on nodes.")
@@ -216,7 +221,6 @@ if __name__ == "__main__":
         agg = agg_network_influence(pr, method="entropy")
         ts.append(t_c)
         centrality_series.append(agg)
-
 
     selector = TempWinSelect(centrality_scores=centrality_series, timestamps=ts, smooth_window=5)
 

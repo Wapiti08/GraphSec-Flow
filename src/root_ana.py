@@ -94,7 +94,7 @@ class RootCauseAnalyzer:
                     ts = self.timestamps.get(n)
                     base = self.cve_scores.get(n, 0.0)
                     if ts is not None:
-                        early_bonus = 0.1 * (1,0 - (ts - tmin) / span)
+                        early_bonus = 0.1 * (1.0 - (ts - tmin) / span)
                         node_score_override[n] = base + early_bonus
                     else:
                         node_score_override[n] = base
@@ -102,6 +102,47 @@ class RootCauseAnalyzer:
         key_fn = self._node_rank_key(cent_scores, node_score_override or None)
 
         return max(candidates, key=key_fn)
+    
+    def compute_comm_scores_and_reps(
+        self,
+        comm_to_nodes: Dict[int, List[int]],
+        cent_scores: Dict[int, float],
+        w_cve: float = 1.0,
+        w_cent: float = 1.0,
+        w_early: float = 0.5,
+        ) -> Tuple[Dict[int, float], Dict[int, int]]:
+        '''
+        compute the community scores and pick up representative nodes
+        evidence: community score = sum(CVE) + sum(centrality) - min(timestamp)
+        representative node: w_cve*CVE + w_cent*cent + w_early*(-timestamp)
+
+        args:
+            comm_to_nodes: mapping of community_id -> list of node_ids
+            cent_scores: mapping of node_id -> centrality score
+            w_cve, w_cent, w_early: weights for scoring
+
+        '''
+        def _comm_score(nodes: Iterable[int]) -> float:
+            cve_sum = sum(self.cve_scores.get(n, 0.0) for n in nodes)
+            cent_sum = sum(cent_scores.get(n, 0.0) for n in nodes)
+            min_ts = min(self.timestamps.get(n, float("inf")) for n in nodes)
+            return w_cve * cve_sum + w_cent * cent_sum - w_early * min_ts
+    
+        def _pick_rep(nodes: Iterable[int]) -> int:
+            best, best_s = None, float("-inf")
+            for n in nodes:
+                ts = self.timestamps.get(n, float("inf"))
+                early = -float(ts) if (ts is not None) else 0.0
+                s = ( w_cve * self.cve_scores.get(n, 0.0)
+                     + w_cent * cent_scores.get(n, 0.0)
+                     + w_early * early)
+                if s > best_s:
+                    best, best_s = n, s
+            return best
+
+        comm_scores = {c: _comm_score(nodes) for c, nodes in comm_to_nodes.items()}
+        representatives = {c: _pick_rep(nodes) for c, nodes in comm_to_nodes.items()}
+        return comm_scores, representatives
 
     def _node_rank_key(self, 
                        cent_scores: Dict[int, float],
@@ -116,6 +157,55 @@ class RootCauseAnalyzer:
             return (cve_score, ts_key, cent)
 
         return _key
+    
+    def analyze_window(
+            self,
+            t_s: Optional[float],
+            t_e: Optional[float],
+            node_whitelist: Optional[Iterable[int]] = None,
+            w_cve: float = 1.0,
+            w_cent: float = 1.0,
+            w_early: float = 0.5,
+            return_subgraph: bool = False,
+        ) -> Dict[str, object]:
+        '''
+        simple interface to analyze a fixed time window
+        extract temporal subgraph -> compute centrailty -> community detection -> 
+                    score communities -> pick root node
+        return: {partition, comm_to_nodes, comm_scores, representatives, cent_scores, [subgraph]}
+        '''
+        if node_whitelist is not None:
+            node_whitelist = self._detector.dep_graph.nodes()
+        
+        sub = self._detector.extract_temporal_subgraph(t_s, t_e, node_whitelist)
+        if sub.number_of_nodes() == 0:
+            out = dict(partition={}, comm_to_nodes={}, comm_scores={}, representatives={}, cent_scores={})
+            if return_subgraph: out["subgraph"] = sub
+            return out
+        
+        # compute centrality
+        cent_all = self.centrality.eigenvector_centrality(t_s, t_e) or {}
+        cent_scores = {n: cent_all.get(n, 0.0) for n in sub.nodes()}
+
+        # louvain
+        cres = self._detector.detect_communities(sub)
+
+        # score + representative nodes
+        comm_scores, reps = self.compute_comm_scores_and_reps(
+            cres.comm_to_nodes, cent_scores, w_cve, w_cent, w_early
+            )
+        
+        out = dict(
+            partition=cres.partition,
+            comm_to_nodes=cres.comm_to_nodes,
+            comm_scores=comm_scores,
+            representatives=reps,
+            cent_scores=cent_scores,
+        )
+
+        if return_subgraph: out["subgraph"] = sub
+        return out
+
 
     def analyze(
             self,
@@ -232,7 +322,7 @@ class RootCauseAnalyzer:
         def global_aware_key(nid: int):
             base = rank_key(nid)
             if used_scope == "global":
-                ts = getattr(self._detector, "timestamp", lambda _ : None)(nid)
+                ts = getattr(self._detector, "timestamp_of", lambda _ : None)(nid)
                 if ts is not None:
                     return (base, -float(ts))
             return (base, 0.0)
