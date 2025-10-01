@@ -186,17 +186,27 @@ def slide_windows_from_node_tms(G, win_size, win_step):
         t += win_step
     return windows
 
+# ---- helper: simple sliding window generator ----
+def _sliding_windows_from_range(t_min, t_max, win_size, win_step):
+    windows = []
+    t = t_min
+    while t < t_max:
+        t_s, t_e = t, t + win_size
+        windows.append((t_s, t_e, (t_s + t_e) / 2)) 
+        t += win_step
+    return windows
+
 
 if __name__ == "__main__":
     # data path
-    small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
-    # depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
+    # small_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_small.pkl")
+    depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
 
     # load the graph
-    with small_depdata_path.open('rb') as fr:
+    with depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
     
-    tempcent = TempCentricity(depgraph)
+    tempcent = TempCentricity(depgraph, search_scope="auto")
 
     # define time window for sliding windows
     WIN_SIZE = 30

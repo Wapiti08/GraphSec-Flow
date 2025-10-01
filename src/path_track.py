@@ -169,7 +169,7 @@ def select_auto_source(
     args:
       D: temporal graph with node 'timestamp' and CVE attributes
       strategy: {'earliest','indegree0','earliest_cve','top_sim'}
-        - 'earliest': pick node with minimal teimstamp
+        - 'earliest': pick node with minimal timestamp
         - 'indegree0': pick any node with in_degree = 0
         - 'earliest_cve': among nodes with has_cve==True, pick minimal timestamp (default)
         - 'top_sim': pick node with maximum similarity score (requires similarity_scores)

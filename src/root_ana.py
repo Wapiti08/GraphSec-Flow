@@ -19,6 +19,7 @@ from utils.util import _first_nonempty, _synth_text_from_dict, _median
 import argparse
 import time
 from search.sideeval import _hop_distance, _sim_from_dist
+# from wins.tempwins import _sliding_windows_from_range
 
 Scope = Literal["window", "global", "auto"]
 
@@ -174,7 +175,7 @@ class RootCauseAnalyzer:
                     score communities -> pick root node
         return: {partition, comm_to_nodes, comm_scores, representatives, cent_scores, [subgraph]}
         '''
-        if node_whitelist is not None:
+        if node_whitelist is None:
             node_whitelist = self._detector.dep_graph.nodes()
         
         sub = self._detector.extract_temporal_subgraph(t_s, t_e, node_whitelist)
@@ -205,7 +206,6 @@ class RootCauseAnalyzer:
 
         if return_subgraph: out["subgraph"] = sub
         return out
-
 
     def analyze(
             self,
