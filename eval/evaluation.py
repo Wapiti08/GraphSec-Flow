@@ -49,8 +49,27 @@ def _lead_time(series_scores, events, thresh=1.0):
         series_scores: [(t_eval, {node: zscore})...]
     '''
     from collections import defaultdict
+    # save node -> (t,zscore)
     node2ts = defaultdict(list)
 
+    for t, sc in series_scores:
+        for n, v in sc.items():
+            node2ts[n].append((t, v))
+    
+    leads = []
+
+    for ev in events:
+        te = ev['t']
+        for n in ev["targets"]:
+            first = None
+            for t, v in node2ts.get(n, []):
+                if v >= thresh:
+                    first = t
+                    break
+            if first is not None:
+                leads.append(te - first)
+    
+    return sum(leads)/len(leads) if leads else 0.0
     
 
     

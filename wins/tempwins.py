@@ -197,7 +197,7 @@ if __name__ == "__main__":
     centrality_series = []
 
     for (t_s, t_e, t_c) in windows:
-        pr = tempcent.eigenvector_centrality(t_s=t_s, t_e=t_e)  # PageRank
+        pr = tempcent.eigenvector_centrality(t_s=t_s, t_e=t_e) 
         if not pr:
             continue
         # choose the aggregation method
