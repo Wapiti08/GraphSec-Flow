@@ -12,6 +12,8 @@ import pandas as pd
 from scipy.signal import find_peaks
 from pathlib import Path
 import pickle
+from wins.tempwins_tuning import make_build_series_fn, recommend_window_params
+from utils.helpers import agg_network_influence
 
 class TempWinSelect:
     ''' select time windows based on significant changes in centrality scores
@@ -128,41 +130,6 @@ class TempWinSelect:
                 }))
         return windows
 
-# -------------- aggregator of individual nodes to global centrality scores --------------
-def agg_network_influence(pr_scores: dict, method="topk_mean", k =5):
-    # create a new 1-dimensional array from an iterable object
-    vals = np.fromiter(pr_scores.values(), dtype=float)
-    if vals.size == 0:
-        return 0.0
-    
-    if method == "topk_mean":
-        k = max(1, min(k, vals.size))
-        # sort starts from smallest, so take the last k elements
-        return float(np.mean(np.sort(vals)[-k:]))
-    
-    if method == "max":
-        return float(np.max(vals))
-    
-    if method == "mean":
-        return float(np.mean(vals))
-
-    # demonstrate the centrality degree (larger -> more central)
-    if method == "gini":
-        x = np.sort(vals)
-        n = x.size
-        if n == 0: return 0.0
-        # Return the cumulative sum
-        cum = np.cumsum(x)
-        gini = (n + 1 - 2 * np.sum(cum) / cum[-1]) / n if cum[-1] > 0 else 0.0
-        return float(max(0.0, gini))
-
-    # define entropy (larger --- most dispersed)
-    if method == "entropy":
-        p = vals / vals.sum() if vals.sum() > 0 else np.ones_like(vals) / vals.size
-        h = -np.sum(p * np.log(p + 1e-10))  # add small constant to avoid log(0)
-        return float(h)
-
-    return ValueError(f"Unknown aggregation method: {method}")
 
 
 def slide_windows_from_node_tms(G, win_size, win_step):
@@ -208,17 +175,27 @@ if __name__ == "__main__":
     
     tempcent = TempCentricity(depgraph, search_scope="auto")
 
-    # define time window for sliding windows
-    WIN_SIZE = 30
-    WIN_STEP = 10
-    
-    windows = slide_windows_from_node_tms(depgraph, WIN_SIZE, WIN_STEP)
+    build_series_fn = make_build_series_fn(tempcent, agg_fn=lambda pr: agg_network_influence(pr, method="entropy"))
+
+    best = recommend_window_params(
+        G = depgraph,
+        build_series_fn = build_series_fn,
+        N_min=100,
+        alpha=0.8,
+        coverage=0.95,
+        r_candidates=(0.5, 0.65, 0.8),
+        beta=1.0
+    )
+
+    windows = slide_windows_from_node_tms(depgraph, best["window_size"], best["step_size"])
+
     if not windows:
         raise RuntimeError("No timestamps found on nodes.")
 
     # build time sequences for global influence
     ts = []
     centrality_series = []
+
     for (t_s, t_e, t_c) in windows:
         pr = tempcent.eigenvector_centrality(t_s=t_s, t_e=t_e)  # PageRank
         if not pr:
@@ -234,16 +211,20 @@ if __name__ == "__main__":
 
     selector = TempWinSelect(centrality_scores=centrality_series, timestamps=ts, smooth_window=5)
 
-    # Change points (indices in the original arrays)
-    peaks = selector.detect_sign_changes(prominence=0.02, distance=5)
+    peaks = selector.detect_sign_changes(
+        prominence=float(best["suggest_prominence"]),
+        distance=int(best["suggest_distance"])
+    )
 
-    # Time windows segmented by those change points within a query range
     wins = selector.select_time_windows(
         start_time=min(ts),
         end_time=max(ts),
-        prominence=0.02,
-        distance=5
+        prominence=float(best["suggest_prominence"]),
+        distance=int(best["suggest_distance"])
     )
 
-    for (t0, t1, meta) in wins:
-        print(f"[{t0}, {t1}) via peaks @ {meta['peak_indices']}")
+    print("Detected peaks:")
+    print(peaks)
+
+    print("\nSelected time windows:")
+    print(wins)

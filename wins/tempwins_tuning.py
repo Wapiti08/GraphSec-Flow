@@ -78,7 +78,12 @@ def estimate_conn_lower_bound(
             if len(nodes) >= 2:
                 H = G.subgraph(nodes)
                 if len(H) > 0:
-                    gcc = max((len(c) for c in nx.connected_components(H)), default=0)
+                    # ignore the connection on direction
+                    if H.is_directed():
+                        comps = nx.weakly_connected_components(H)
+                    else:
+                        comps = nx.connected_components(H)
+                    gcc = max((len(c) for c in comps), default=0)
                     frac = gcc / max(1, len(H))
                     if frac >= alpha:
                         good += 1
@@ -150,12 +155,212 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
         return 0.0
     return float(np.dot(a, b) / (na * nb))
 
-def score_candidate(
+def score_candidates(
         candidates: List[Candidate],
         centrality_vectors: List[np.ndarray],
         timestamps: List[float],
         beta: float = 1.0
     ) -> List[CandidateScore]:
+    ''' Score stability (S), sensitivity (C), and resolvability (R).
+    assume centrality_vectors are already computed for each candidate;
+    each element is an array stacked over windows
+
     '''
+    K = len(candidates)
+    if K == 0:
+        return []
     
+    # 1） Stability S:  mean cosine similarity of successive
+    S = np.zeros(K, dtype=float)
+    for k in range(K):
+        x = np.asarray(centrality_vectors[k], dtype=float)
+        if x.size < 3:
+            # there is no enough windows to compute stability
+            S[k] = 0.0
+        else:
+            mu = np.mean(x)
+            sd = np.std(x)
+            # calculate Coefficient of Variation to measure stability
+            cv = sd / (abs(mu) + 1e-12)
+            S[k] = float(np.clip(1.0 - cv, 0.0, 1.0))
+
+    # 2） Sensitivity C: number of peaks per unit time on |dC/dt| times average prominence proxy
+    C = np.zeros(K, dtype=float)
+    for k in range(K):
+        t = np.asarray(timestamps[k], dtype=float)
+        x = np.asarray(centrality_vectors[k], dtype=float)
+        if x.size < 3:
+            C[k]=0.0
+            continue
+        # measure the change rate
+        d = np.gradient(x, t)
+        med = np.median(d)
+        # Measuring volatility
+        mad = np.median(np.abs(d - med)) + 1e-12
+        # measure peaks
+        thr = med + 2.5*mad
+        peaks, _ = find_peaks(d, prominence=thr)
+
+        # check the density of peaks
+        if t.size >= 2:
+            span = t[-1] - t[0]
+            density = len(peaks) / max(span, 1e-9)
+        else:
+            density = 0.0
+        
+        # prominence proxy
+        prom_proxy = float(np.mean(d[d > thr])) if np.any(d<thr) else 0.0
+        # normalize with tanh --- only when the change is frequent and also intensive
+        C[k] = float(np.tanh(0.5 * density) * np.tanh(0.5 * prom_proxy / (mad if mad>0 else 1.0)))
+    
+    # 3) Resolvability R: proxy with number of windows and variation (not too low)
+    R = np.zeros(K, dtype=float)
+    for k in range(K):
+        x = np.asarray(centrality_vectors[k], dtype=float)
+        if x.size < 3:
+            R[k] = 0.0
+        else:
+            # encourage enough windows but penelize extreme flatness
+            nfac = np.tanh(len(x) / 20.0) # more data points, better identify patterns
+            varfac = np.tanh(np.var(x) / (np.mean(x**2) + 1e-12))
+            R[k] = float(0.6 * nfac + 0.4 * varfac)
+
+    # harmonic trade-off between S and C, then multiply by R
+    scores = []
+    for k in range(K):
+        if (beta**2 * S[k] + C[k]) == 0:
+            f = 0.0
+        else:
+            f = ((1 + beta**2) * S[k] * C[k]) / (beta**2 * S[k] + C[k])
+        total = float(f * R[k])
+        scores.append(CandidateScore(candidate=candidates[k],
+                                     stability_S=float(S[k]),
+                                     sensitivity_C=float(C[k]),
+                                     resolvability_R=float(R[k]),
+                                     total_score=total))
+    return scores
+
+
+# ------------- top-level function -------------
+
+def recommend_window_params(
+        G: nx.Graph,
+        build_series_fn: Callable[[float, float], Tuple[np.ndarray, np.ndarray]],
+        N_min: int = 100,
+        alpha: float = 0.8,
+        coverage: float = 0.95,
+        r_candidates: Tuple[float, ...] = [0.5, 0.65, 0.8],
+        beta: float = 1.0,
+        tau_min: Optional[float] = None,
+        candidate_multipliers: Tuple[float, ...] = (0.5, 0.65, 0.8, 1.0),
+    ) -> Dict[str, float]:
     '''
+    Returns a dict including best window_size, step_size, and suggested
+    distance/prominence parameters for TempWinSelect.
+
+    args:
+        G: input graph, every node needs to have timestamp attr
+        build_series_fn: 
+            given (win_size, step_size), computes a scalar
+            aggregated centrality time series over sliding windows and returns
+            (t_centers, series)
+        N_min: the least number of nodes within one window
+        alpha: to estimate connectivity lower bound
+        coverage: use to estimate connectivity lower bound
+        r_candidates: candidate window overlap rate
+        beta: the parameter to adjust the weight of stability and sensitivity
+    '''
+    # collect timestamps
+    ts_all = sorted(float(d.get("timestamp", 0)) for _, d in G.nodes(data=True) if d.get("timestamp", None) is not None)
+    if len(ts_all) < 3:
+        raise ValueError("Not enough timestamps on nodes to recommend parameters.")
+
+    ts = np.asarray(ts_all, dtype=float)
+    dt_med = _medium_dt(ts)
+    # event rate
+    lam = 1.0 / max(dt_med, 1e-9)
+
+    # connectivity lower bound
+    w_conn_min = estimate_conn_lower_bound(G, ts, alpha=alpha, coverage=coverage)
+
+    # initial window
+    w_pilot = max(N_min / lam, w_conn_min)
+    t_pilot, s_pilot = build_series_fn(w_pilot, w_pilot * 0.2)  # 80% overlap
+    ts_est = build_series_and_estimate_timescales(t_pilot, s_pilot)
+    # variable for correlated time
+    tau_c = ts_est.tau_c
+    # variable for changes
+    tau_chg = ts_est.tau_chg
+
+    # build candidate parameters
+    candidates: List[Candidate] = []
+    time_series_per_candidate: List[np.ndarray] = []
+    time_stamps_per_candidate: List[np.ndarray] = []
+    for m in candidate_multipliers:
+        w = max(m * tau_chg, w_conn_min, N_min / lam)
+        for r in r_candidates:       # (0.5, 0.65, 0.8)
+            step = min((1.0 - r) * w, tau_c / 2.0)
+            t_c, s_c = build_series_fn(w, step)
+            if len(t_c) >= 3:
+                candidates.append(Candidate(window_size=w, step_size=step))
+                time_series_per_candidate.append(s_c)
+                time_stamps_per_candidate.append(t_c)
+    
+
+    # 4) score and pick best
+    scores = score_candidates(candidates, time_series_per_candidate, time_stamps_per_candidate, beta=beta)
+    if not scores:
+        # fallback: return pilot-based
+        step_fb = min(0.25 * w_pilot, tau_c / 2.0)
+        dist_suggest = int(np.ceil((tau_min or 0.5 * tau_chg) / max(step_fb, 1e-9)))
+        prom_suggest = ts_est.grad_median + 2.5 * ts_est.grad_mad
+        return dict(window_size=float(w_pilot),
+                    step_size=float(step_fb),
+                    suggest_distance=float(dist_suggest),
+                    suggest_prominence=float(prom_suggest),
+                    tau_c=float(tau_c),
+                    tau_chg=float(tau_chg),
+                    w_conn_min=float(w_conn_min))
+
+    # choose best in normal status
+    best = max(scores, key=lambda z: z.total_score)
+    best_step = max(1e-9, best.candidate.step_size)
+    dist_suggest = int(np.ceil((tau_min or 0.5 * tau_chg) / best_step))
+    prom_suggest = ts_est.grad_median + 2.5 * ts_est.grad_mad
+
+    return dict(window_size=float(best.candidate.window_size),
+                step_size=float(best.candidate.step_size),
+                suggest_distance=float(dist_suggest),
+                suggest_prominence=float(prom_suggest),
+                tau_c=float(tau_c),
+                tau_chg=float(tau_chg),
+                w_conn_min=float(w_conn_min))
+
+# -------------------- convenience wrapper example --------------------
+
+def make_build_series_fn(tempcent_obj, agg_fn: Callable[[Dict], float]):
+    """
+    Returns a callable build_series_fn(win_size, step_size) that uses your
+    TempCentricity implementation and aggregation to produce a scalar series.
+    tempcent_obj must implement .eigenvector_centrality(t_s, t_e) (or similar).
+    agg_fn maps from {node: centrality} -> scalar.
+    """
+    def build_series(win_size: float, step_size: float):
+        # discover time range from underlying graph inside tempcent_obj if available
+        G = getattr(tempcent_obj, "G", None) or getattr(tempcent_obj, "graph", None)
+        if G is None:
+            raise ValueError("tempcent_obj must carry the underlying graph as attribute G or graph.")
+        ts_all = sorted(float(d.get("timestamp", 0)) for _, d in G.nodes(data=True) if d.get("timestamp", None) is not None)
+        t_min, t_max = ts_all[0], ts_all[-1]
+        # sliding windows
+        t = t_min
+        centers, scalars = [], []
+        while t < t_max:
+            t_s, t_e = t, t + float(win_size)
+            pr = tempcent_obj.eigenvector_centrality(t_s=t_s, t_e=t_e)
+            if pr:
+                centers.append((t_s + t_e) / 2.0)
+                scalars.append(float(agg_fn(pr)))
+            t += float(step_size)
+        return np.asarray(centers, dtype=float), np.asarray(scalars, dtype=float)
+    return build_series

@@ -63,3 +63,38 @@ def _fwhm_widths(x: np.ndarray, y: np.ndarray, peaks: np.ndarray) -> List[float]
     
     return widths
 
+# -------------- aggregator of individual nodes to global centrality scores --------------
+def agg_network_influence(pr_scores: dict, method="topk_mean", k =5):
+    # create a new 1-dimensional array from an iterable object
+    vals = np.fromiter(pr_scores.values(), dtype=float)
+    if vals.size == 0:
+        return 0.0
+    
+    if method == "topk_mean":
+        k = max(1, min(k, vals.size))
+        # sort starts from smallest, so take the last k elements
+        return float(np.mean(np.sort(vals)[-k:]))
+    
+    if method == "max":
+        return float(np.max(vals))
+    
+    if method == "mean":
+        return float(np.mean(vals))
+
+    # demonstrate the centrality degree (larger -> more central)
+    if method == "gini":
+        x = np.sort(vals)
+        n = x.size
+        if n == 0: return 0.0
+        # Return the cumulative sum
+        cum = np.cumsum(x)
+        gini = (n + 1 - 2 * np.sum(cum) / cum[-1]) / n if cum[-1] > 0 else 0.0
+        return float(max(0.0, gini))
+
+    # define entropy (larger --- most dispersed)
+    if method == "entropy":
+        p = vals / vals.sum() if vals.sum() > 0 else np.ones_like(vals) / vals.size
+        h = -np.sum(p * np.log(p + 1e-10))  # add small constant to avoid log(0)
+        return float(h)
+
+    return ValueError(f"Unknown aggregation method: {method}")
