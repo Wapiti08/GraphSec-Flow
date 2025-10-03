@@ -15,6 +15,7 @@ import pickle
 from wins.tempwins_tuning import make_build_series_fn, recommend_window_params
 from utils.helpers import agg_network_influence
 import functools
+from bisect import bisect_left, bisect_right
 
 class TempCentricity:
     """ Calculate temporal centricity for nodes in a graph
@@ -34,9 +35,11 @@ class TempCentricity:
         self.search_scope = search_scope
         self.global_cover = global_cover
 
-        # preset time interval
-        ts = [int(d.get("timestamp", 0)) for _, d in graph.nodes(data=True)]
-        self._tmin, self._tmax = (min(ts), max(ts)) if ts else (0,0)
+        # preset time interval, used for half search
+        nodes, ts = zip(*[(n, int(d.get("timestamp", 0))) for n, d in graph.nodes(data=True)]) if graph.number_of_nodes() else ([],[])
+        self._nodes_sorted_by_t = [n for _, n in sorted(zip(ts, nodes))]
+        self._ts_sorted = sorted(ts)
+        self._tmin, self._tmax = (self._ts_sorted[0], self._ts_sorted[-1]) if self._ts_sorted else (0, 0)
 
         # calculate static baseline once
         self._static_dc = self._compute_static_dc()
@@ -46,25 +49,33 @@ class TempCentricity:
         total = (self._tmax - self._tmin + 1) or 1
         win = max(0, min(t_e, self._tmax + 1) - max(t_s, self._tmin))
         return win/total
+    
+    def _nodes_in_window(self, t_s: int, t_e: int):
+        if not self._ts_sorted:
+            return []
+        L = bisect_left(self._ts_sorted, t_s)
+        R = bisect_left(self._ts_sorted, t_e)
+        if L >= R:
+            return []
+        # index nodes within interval
+        return self._nodes_sorted_by_t[L:R]
 
-    @functools.lru_cache(maxsize=512)
+    @functools.lru_cache(maxsize=2048)
     def _extract_temporal_subgraph(self, t_s: int, t_e: int):
         '''
         Keep nodes with t_s <= node.timestamp < t_e, then take induced subgraph.
 
         '''
         if self.search_scope == 'global':
-            return self.graph.copy()
+            return self.graph
 
         if self.search_scope == "auto" and self._coverage(t_s, t_e) >= self.global_cover:
-            return self.graph.copy()
+            return self.graph
+        
+        nodes_in_window = self._nodes_in_window(t_s, t_e)
 
-        nodes_in_window = [
-            n for n, d in self.graph.nodes(data=True)
-            if t_s <= int(d.get("timestamp", 0)) < t_e
-        ]
         # induced subgraph of selected nodes
-        return self.graph.subgraph(nodes_in_window).copy()
+        return self.graph.subgraph(nodes_in_window)
 
     # ----------- Static Centrality (baseline) -------------
 
@@ -95,7 +106,7 @@ class TempCentricity:
         return self._static_evc
     
     # ------------ Dynamic time window ---------------
-
+    @functools.lru_cache(maxsize=2048)
     def degree_centrality(self, t_s, t_e):
         '''
         compute degree centrality for nodes in the temporal subgraph
@@ -112,7 +123,7 @@ class TempCentricity:
         else:
             return nx.degree_centrality(H)
         
-
+    @functools.lru_cache(maxsize=1024)
     def eigenvector_centrality(self, t_s, t_e):
         '''
         compute eigenvector centrality for nodes in the temporal subgraph
@@ -122,7 +133,7 @@ class TempCentricity:
         if H.is_directed():
             return nx.pagerank(H)
         else:
-            return nx.eigenvector_centrality(H, max_iter=1000, tol=1e-06)
+            return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
 
 if __name__ == "__main__":
     # data path

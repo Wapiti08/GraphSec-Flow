@@ -3,6 +3,7 @@
  # @ Modified time: 2025-10-02 15:37:42
  # @ Description: Normalization and evaluation
  '''
+from typing import Dict
 
 def _pick_total(d):
     # compatible with (in, out, total), default choose total to compare with undirected graph
@@ -20,7 +21,7 @@ def _zscore(scores):
     std = var ** 0.5 or 1.0
     return {n: (v-mu)/std for n, v in scores.items()}
 
-def _rank_metrics(scores, targets):
+def _rank_metrics(scores: Dict, targets):
     ''' calculate Mean Reciprocal Rank (MRR) and Hits@3
     
     '''
