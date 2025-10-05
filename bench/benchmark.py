@@ -12,7 +12,13 @@ from cent.temp_cent import TempCentricity
 from eval.evaluation import _zscore, _rank_metrics, _lead_time, _pick_total
 from eval.events import build_events_from_vamana_meta
 import pickle
-
+from cve.cvescore import _normalize_cve_id
+from utils.util import _first_nonempty, _synth_text_from_dict
+from typing import Dict, List, Tuple, Optional, Any
+from cve.cveinfo import osv_cve_api
+from eval.events import _first_cve_data_of_node, _last_cve_data_of_node, _to_same_type
+from datetime import datetime, timedelta
+import pandas as pd
 
 def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
     '''
@@ -93,7 +99,101 @@ if __name__ == "__main__":
     with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
     
+    # generate cve_records_for_meta
+    nodeid_to_texts: Dict[Any, List[str]] = {}
+    cve_records_for_meta: Dict[Any, List[Dict[str, Any]]] = {}
+    fallback_used = 0
+    osv_hits = 0
+    dropped = 0
+    
+    TEXT_KEYS = ["details", "summary", "description"]
 
+    # warm up the persistent cache once per unique CVE id
+    unique_cve_ids = {
+        cid for _, attrs in depgraph.nodes(data=True) 
+        for cid in ([_normalize_cve_id(x) for x in (attrs.get("cve_list") or [])])
+        if cid
+    }
+
+    for cid in unique_cve_ids:
+        try:
+            _ = osv_cve_api(cid)
+        except Exception:
+            pass
+    
+    for nid, attrs in depgraph.nodes(data=True):
+        raw_list = attrs.get("cve_list", []) or []
+        texts: List[str] = []
+        metas: List[Dict[str, Any]] = []
+
+        for raw in raw_list:
+            cid = _normalize_cve_id(raw)
+            if not cid:
+                dropped += 1
+                continue
+
+            # Try OSV first
+            rec: Dict[str, Any] = {}
+            try:
+                rec = osv_cve_api(cid) or {}
+            except Exception as e:
+                rec = {"_error": str(e)}
+            
+            text = _first_nonempty(rec, TEXT_KEYS)
+            
+            # Fallback: synthesize a minimal text from the node's dict if OSV had nothing
+            if not text and isinstance(raw, dict):
+                text = _synth_text_from_dict(cid, raw)
+                if text:
+                    fallback_used += 1
+            elif text:
+                osv_hits += 1
+
+            if not text:
+                dropped += 1
+                continue
+
+            texts.append(text)
+            metas.append({
+                "name": rec.get("id") or rec.get("name") or cid,
+                "severity": rec.get("severity") or rec.get("cvss") or rec.get("cvssScore"),
+                "timestamp": rec.get("published") or rec.get("modified"),
+            })
+        
+        if texts:
+            nodeid_to_texts[nid] = texts
+            cve_records_for_meta[nid] = metas
+    
+    if not nodeid_to_texts:
+        raise RuntimeError("No CVE texts found. Nodes had empty cve_list or OSV lookups returned no detail.")
+
+    # create tempcent instance
+    tempcent = TempCentricity(depgraph, search_scope='auto')
+
+    # -------- build t_eval_list --------------
+
+    # global data bounds from cve_records_for_meta
+    earliest = min(
+        d for d in (
+            _first_cve_data_of_node(metas)
+            for metas in cve_records_for_meta.values()
+        ) if d is not None
+    )
+
+    latest = max(
+        d for d in (
+            _last_cve_data_of_node(metas)
+            for metas in cve_records_for_meta.values()
+        ) if d is not None
+    )
+
+    lookback_days = 90        # window length
+    stride_days   = 7         # eval cadence (weekly)
+
+    # start a bit earlier so the first window has context
+    start = earliest - timedelta(days=lookback_days + 1)
+
+    t_eval_list = [d.date() for d in pd.date_range(start=start, end=latest, freq=f"{stride_days}D", inclusive="both")]
 
     events = build_events_from_vamana_meta(
             depgraph,
@@ -101,6 +201,19 @@ if __name__ == "__main__":
             t_eval_list,
             fallback_to_release=True, 
     )
+
+    # create window function
+    ref_type = pd.Timestamp.now(tz="UTC")
+
+    def window_iter():
+        for d_eval in t_eval_list:
+            d_s = d_eval - timedelta(days = lookback_days)
+            d_e = d_eval
+            yield (
+                _to_same_type(d_s, ref_type),
+                _to_same_type(d_e, ref_type),
+                d_eval, 
+            )
 
     metrics = benchmark_centrality(tempcent, events, window_iter)
     print(metrics)

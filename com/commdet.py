@@ -54,14 +54,14 @@ class TemporalCommDetector:
             t_e = float("inf")
 
         if t_s == float("-inf") and t_e == float("inf"):
-            return self.dep_graph.copy()
+            return self.dep_graph
 
         allowed_nodes = {
             n for n in node_whitelist
             if (n in self.timestamps) and (t_s <= self.timestamps[n] <= t_e)
         }
 
-        temp_subgraph = self.dep_graph.subgraph(allowed_nodes).copy()
+        temp_subgraph = self.dep_graph.subgraph(allowed_nodes)
         nx.set_node_attributes(
             temp_subgraph, {n: {"timestamp": self.timestamps.get(n)} for n in temp_subgraph.nodes}
         )
@@ -129,3 +129,7 @@ class TemporalCommDetector:
                 best_comm = comm
         
         return best_comm, cent_scores
+    
+
+if __name__ == "__main__":
+    

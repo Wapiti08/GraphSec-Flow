@@ -17,7 +17,7 @@ def _to_date(x):
     
     s = str(x)
     try:
-        pd.to_datetime(s, utc=True).date()
+        return pd.to_datetime(s, utc=True).date()
     except Exception:
         try:
             return pd.to_datetime(s, utc=True).date()
@@ -38,13 +38,24 @@ def _first_cve_data_of_node(cve_list_for_node):
             ds.append(d)
     return min(ds) if ds else None
 
+def _last_cve_data_of_node(cve_list_for_node):
+    ''' latest data among CVE meta records for a node
+    
+    '''
+    ds = []
+    for rec in (cve_list_for_node or []):
+        d = _to_date(rec.get("timestamp"))
+        if d:
+            ds.append(d)
+    return max(ds) if ds else None
+
 def _to_same_type(t, ref_type):
     if isinstance(ref_type, pd.Timestamp):
-        return pd.Timestamp(t)
+        ts = pd.Timestamp(t)
+        return ts.tz_localize("UTC") if ts.tz is None else ts.tz_convert("UTC")
     if isinstance(ref_type, datetime):
         return datetime.combine(t, datetime.min.time())
     return t 
-
 
 # ------------ generate events according to earliest timestamp --------------
 def build_events_from_vamana_meta(
