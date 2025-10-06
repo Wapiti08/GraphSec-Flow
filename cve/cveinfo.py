@@ -13,30 +13,26 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from pathlib import Path
 
-def nvd_cve_api(cve_id):
-    url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Failed to retrieve CVE info. Status code: {response.status_code}")
-        return None
-
-def nvd_cwe_api(cwe_id):
-    url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cweId={cwe_id}"
-    response = requests.get(url)
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"Failed to retrieve CVE info. Status code: {response.status_code}")
-        return None
-
-def mitre_cve_api(package):
-    cve_simple = crawler.get_main_page(package) 
-    pprint(crawler.get_cve_detail(cve_simple))
 
 
-class OSVClient:
+# def nvd_cwe_api(cwe_id):
+#     url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cweId={cwe_id}"
+#     response = requests.get(url)
+#     if response.status_code == 200:
+#         return response.json()
+#     else:
+#         print(f"Failed to retrieve CVE info. Status code: {response.status_code}")
+#         return None
+
+# def mitre_cve_api(package):
+#     cve_simple = crawler.get_main_page(package) 
+#     pprint(crawler.get_cve_detail(cve_simple))
+
+
+class VulnClient:
+    ''' unified OSV + NVD query client with caching and retries
+    
+    '''
     def __init__(self, ttl_seconds: int = 24*3600):
         self.ttl = ttl_seconds
         # cve_id -> {'ts': float, 'data': Any}
@@ -44,6 +40,10 @@ class OSVClient:
         self._neg_cache_ttl = 5 * 60 
         self._lock = threading.Lock()
         self.session = requests.Session()
+
+    
+    def _make_session(self):
+        s= requests.Session()
         retry = Retry(
             total=5,
             backoff_factor=0.5,
@@ -51,40 +51,55 @@ class OSVClient:
             allowed_methods= ["GET"],
             raise_on_status=False,
         )
-        self.session.mount("https://", HTTPAdapter(max_retries=retry))
+        s.mount("https://", HTTPAdapter(max_retries=retry))
+        return s
     
-    def get(self, cve_id: str) -> Optional[Dict[str, Any]]:
+    def _get_json(self, url: str) -> Optional[Dict[str, Any]]:
+        try:
+            resp = self.session.get(url, timeout=15)
+            if resp.status_code == 200:
+                return resp.json()
+        except Exception:
+            pass
+        return None
+    
+    def _get_from_osv(self, cve_id: str) -> Optional[Dict[str, Any]]:
+        return self._get_json(f"https://api.osv.dev/v1/vulns/{cve_id}")
+
+    def _get_from_nvd(self, cve_id: str) -> Optional[Dict[str, Any]]:
+        return self._get_json(f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}")
+
+    def get_cve(self, cve_id: str) -> Optional[Dict[str, Any]]:
+        ''' query OSV first, fall back to NVD if not found
+        
+        '''
         now = time.time()
         with self._lock:
             hit = self._cache.get(cve_id)
             if hit:
                 age = now - hit["ts"]
-                # if we cached a miss, respect a short negative TTL
                 if hit["data"] is None and age < self._neg_cache_ttl:
                     return None
                 if hit["data"] is not None and age < self.ttl:
                     return hit["data"]
         
-        url = f"https://api.osv.dev/v1/vulns/{cve_id}"
-        try:
-            resp = self.session.get(url, timeout=10)
-        except requests.RequestException:
-            data = None
-        else:
-            if resp.status_code == 200:
-                try:
-                    data = resp.json()
-                except (ValueError, json.JSONDecodeError):
-                    data = None
-            else:
-                data = None 
+        # OSV first
+        data = self._get_from_osv(cve_id)
+        source = "osv"
+
+        # Fallback to NVD
+        if not data:
+            data = self._get_from_nvd(cve_id)
+            source = "nvd"
+        
+        result = {"source": source, "data": data} if data else None
 
         with self._lock:
-            self._cache[cve_id] = {"ts": now, "data": data}
-        return data
+            self._cache[cve_id] = {"ts": now, "data": result}
+        return result
 
 
-class PersistentOSVClient(OSVClient):
+class PersistentVulnClient(VulnClient):
     def __init__(self, ttl_seconds = 24 * 3600, cache_path: Optional[str] = None):
         super().__init__(ttl_seconds)
         self.cache_path = Path(cache_path)
@@ -115,18 +130,52 @@ class PersistentOSVClient(OSVClient):
         except Exception:
             pass
     
-    def get(self, cve_id: str):
-        data = super().get(cve_id)
-        try:
-            self._flush()
-        except Exception:
-            pass
-        return data
+    def get_cve(self, cve_id: str):
+        ''' query OSV first, fall back to NVD if not found
+        
+        '''
+        now = time.time()
+        with self._lock:
+            hit = self._cache.get(cve_id)
+            if hit:
+                age = now - hit['ts']
+                if hit['data'] is None and age < self._neg_cache_ttl:
+                    return None
+                if hit['data'] is not None and age < self.ttl:
+                    return hit["data"]
+        # OSV first
+        data = self._get_from_osv(cve_id)
+        source = "osv"
 
-_persistent_osv = PersistentOSVClient(ttl_seconds=24*3600, cache_path=Path.cwd().joinpath("osv_cache.json"))
+        # Fallback to NVD
+        if not data:
+            data = self._get_from_nvd(cve_id)
+            source = "nvd"
+        
+        result = {"source": source, "data": data} if data else None
+
+        with self._lock:
+            self._cache[cve_id] = {"ts": now, "data": result}
+        
+        return result
+
+
+_persistent_osv = PersistentVulnClient(ttl_seconds=24*3600, cache_path=Path.cwd().joinpath("osv_cache.json"))
 
 def osv_cve_api(cve_id):
-    return _persistent_osv.get(cve_id)
+    return _persistent_osv.get_cve(cve_id)
+
+
+# def nvd_cve_api(cve_id):
+#     url = f"https://services.nvd.nist.gov/rest/json/cves/2.0?cveId={cve_id}"
+#     response = requests.get(url)
+#     if response.status_code == 200:
+#         return response.json()
+#     else:
+#         print(f"Failed to retrieve CVE info. Status code: {response.status_code}")
+#         return None
+
+
 
 if __name__ == "__main__":
     # Example usage
@@ -134,7 +183,7 @@ if __name__ == "__main__":
     osv_id = "OSV-2020-111"
     package = "org.jenkins-ci.main:cli:1.591"
     cwe_id = "CWE-20"
-    cve_data = nvd_cve_api(cve_id)
+    # cve_data = nvd_cve_api(cve_id)
     # print("---- NVD CVE API ----")
     # print(cve_data)
     # cwe_data = nvd_cwe_api(cwe_id)
@@ -149,5 +198,6 @@ if __name__ == "__main__":
 
     for cve_id in cve_ids:
         cve_data = osv_cve_api(cve_id)
+        # cve_data = nvd_cve_api(cve_id)
         print("----- OSV CVE API ----")
         print(cve_data)

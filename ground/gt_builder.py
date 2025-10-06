@@ -390,6 +390,47 @@ class GTBuilder:
                 neighbors = self.g.neighbors(cur) if self.prefer_upstream_direction else self.g.reverse_neighbors(cur)
                 for e in neighbors:
                     # make sure the direction is from src to dst
-                    nxt = e.dst if self.prefer_upstream_direction 
+                    nxt = e.dst if self.prefer_upstream_direction else e.src
+                    if nxt in visited:
+                        continue
+                    # core novel part -- restrict by time
+                    if time_constrained:
+                        src_time = self.g.nodes[cur].time
+                        nxt_time = self.g.nodes.get(nxt, Node(nxt, "", "")).time
+                        basis = src_time or start_time
+                        if basis and nxt_time and nxt_time < basis:
+                            continue
+                    visited.add(nxt)
+                    q.append((nxt, depth + 1))
+                    edges_accum.append(
+                        PathEdge(src=e.src, dst=e.dst) if self.prefer_upstream_direction
+                        else PathEdge(src=e.dst, dst=e.src)
+                    )
+        
+            depth_factor = 1.0 if not edges_accum else max(0.3, 1.0 - 0.05 * len(edges_accum))
+            conf = max(0.0, min(1.0, root.confidence * depth_factor))
+
+            ev = [EvidenceItem(source="OSV"), EvidenceItem(source="NVD")]
+            refs.append(ReferencePath(cve_id=root.cve_id, root_id=rid, path=edges_accum, evidence=ev, confidence=conf))
+        
+        return refs
+
+def main():
+
+    ap = argparse.ArgumentParser(description="Ground-truth-like reference constructor for vulnerability diffusion studies.")
+    ap.add_argument("--dep-graph", required=True)
+    ap.add_argument("--osv", required=False, default=None)
+    ap.add_argument("--nvd", required=False, default=None)
+    ap.add_argument("--out-root", required=True)
+    ap.add_argument("--out-paths", required=True)
+    ap.add_argument("--downstream", action="store_true")
+    ap.add_argument("--max-depth", type=int, default=6)
+    ap.add_argument("--no-time-constraint", action="store_true")
+    args = ap.parse_args()
+
+    
+
+
+
 
 
