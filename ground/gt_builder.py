@@ -104,11 +104,13 @@ class Edge:
     time: Optional[datetime] = None
 
 class DepGraph:
+    ''' Time-aware directed graph of package dependencies, using adjcency list representation.'''
     def __init__(self):
         self.nodes: Dict[str, None] = {}
+        # adjacency list
         self.adj: Dict[str, List[Edge]] = defaultdict(list)
+        # reverse adjacency list
         self.rev: Dict[str, List[Edge]] = defaultdict(list)
-
     
     @staticmethod
     def from_json(obj, Dict[str, Any]):

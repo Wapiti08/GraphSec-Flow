@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, Any, Iterable, Optional
 from cve.cveinfo import osv_cve_api
 
+
 def _normalize_cve_id(item: Any) -> Optional[str]:
     """Turn a cve_list entry into a lookup string for OSV."""
     if isinstance(item, str) and item.strip():
@@ -156,3 +157,25 @@ def cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict):
                 pass
             cve_score_dict[cve_id] = score
     return cve_score_dict
+
+def node_cve_score_agg(n, depgraph, per_cve_scores, t_s=None, t_e=None, agg="sum"):
+    '''
+    Aggregate the CVE scores for a given node n in depgraph.
+    If t_s and t_e are given, only consider CVEs whose timestamps fall within [t_s, t_e].
+    
+    args:
+        n: node id
+        depgraph: the dependency graph (networkx graph)
+        per_cve_scores: dict of cve_id -> score
+        t_s: start timestamp (inclusive)
+        t_e: end timestamp (inclusive)
+        agg: aggregation method, either "sum" or "max"
+    
+    return:
+        aggregated score (float)
+    '''
+    raw_list = (depgraph.nodes[n].get("cve_list") or []) if depgraph.has_node(n) else []
+    vals = []
+
+    for raw in raw_list:
+        
