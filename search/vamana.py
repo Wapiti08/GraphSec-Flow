@@ -270,27 +270,31 @@ class VamanaOnCVE:
 
         return neighbors, explanations
 
+def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
+    '''
+    return:
+        - nodeid_to_texts: Dict[Any, List[str]]
+        - cve_records_for_meta: Dict[Any, List[Dict[str, Any]]]
+    '''
 
-if __name__ =="__main__":
-
-    # load dependency graph with cve info
-    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
-
-    with cve_depdata_path.open('rb') as fr:
-        depgraph = pickle.load(fr)
+    data_dir = Path.cwd().parent.joinpath("data")
     
-    assert isinstance(depgraph, nx.Graph), "dep_graph_cve.pkl should contain a networkx.Graph or {'graph': nx.Graph}"
+    node_texts_path = data_dir.joinpath("nodeid_to_texts.pkl")
+    cve_meta_path = data_dir.joinpath("cve_records_for_meta.pkl")
 
-    # ============ extract node -> [cve_texts] ============
-    # each node has ""cve_list"" = ["CVE-xxxx"]
+    # use cache if exists
+    if (not force_rebuild) and node_texts_path.exists() and cve_meta_path.exists():
+        nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
+        cve_records_for_meta = pickle.loads(cve_meta_path.read_bytes())
+        print(f"[cache] Loaded nodeid_to_texts & cve_records_for_meta from {data_dir}")
 
+    print("[info] Rebuilding nodeid_to_texts & cve_records_for_meta from depgraph...")
+    TEXT_KEYS = ["details", "summary", "description"]
     nodeid_to_texts: Dict[Any, List[str]] = {}
     cve_records_for_meta: Dict[Any, List[Dict[str, Any]]] = {}
     fallback_used = 0
     osv_hits = 0
     dropped = 0
-    
-    TEXT_KEYS = ["details", "summary", "description"]
 
     # warm up the persistent cache once per unique CVE id
     unique_cve_ids = {
@@ -305,6 +309,7 @@ if __name__ =="__main__":
         except Exception:
             pass
     
+    # build for each node
     for nid, attrs in depgraph.nodes(data=True):
         raw_list = attrs.get("cve_list", []) or []
         texts: List[str] = []
@@ -351,10 +356,37 @@ if __name__ =="__main__":
     if not nodeid_to_texts:
         raise RuntimeError("No CVE texts found. Nodes had empty cve_list or OSV lookups returned no detail.")
 
-    # build embedder 
-    embedder = CVEVector()
+    # write cache
+    node_texts_path.write_bytes(pickle.dumps(nodeid_to_texts))
+    cve_meta_path.write_bytes(pickle.dumps(cve_records_for_meta))
+    print(f"[build] Wrote nodeid_to_texts & cve_records_for_meta to {data_dir}")
+    print(f"[build] Wrote cve_records_for_meta to {data_dir}")
 
-    # ------------ build vamana search -------------
+    print({
+        "nodes_indexed": len(nodeid_to_texts),
+        "total_nodes": depgraph.number_of_nodes(),
+        "osv_hits": osv_hits,
+        "fallback_used": fallback_used,
+        "dropped_entries": dropped,
+    })
+
+    return nodeid_to_texts, cve_records_for_meta
+
+
+if __name__ =="__main__":
+
+    # load dependency graph with cve info
+    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
+
+    with cve_depdata_path.open('rb') as fr:
+        depgraph = pickle.load(fr)
+    assert isinstance(depgraph, nx.Graph), "dep_graph_cve.pkl should contain a networkx.Graph or {'graph': nx.Graph}"
+
+    # read cache or build nodeid_to_texts and cve_records_for_meta
+    nodeid_to_texts, cve_records_for_meta = _load_or_build_texts_and_meta(depgraph, force_rebuild=False)
+
+    # ---------- build embedder -----------
+    embedder = CVEVector()
     ann = VamanaSearch()
     vac = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
     vac.build(cve_records=cve_records_for_meta)
@@ -363,9 +395,6 @@ if __name__ =="__main__":
     coverage = {
         "nodes_indexed": len(nodeid_to_texts),
         "total_nodes": depgraph.number_of_nodes(),
-        "osv_hits": osv_hits,
-        "fallback_used": fallback_used,
-        "dropped_entries": dropped,
     }
 
     # 1) Quantitative reliability
@@ -408,7 +437,6 @@ if __name__ =="__main__":
             snip = (bt[:140] + "…") if len(bt) > 140 else bt
             print(f"   text: {snip}")
     print(f"\nSearch finished in {ms:.1f} ms")
-
 
 
 '''

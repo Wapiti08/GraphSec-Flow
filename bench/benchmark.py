@@ -66,6 +66,8 @@ def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
             "Hits@3": sum(h3s) / len(h3s) if h3s else 0.0,
             "LeadTime (days)": _lead_time(series_scores, events, thresh=1.0),
             "Latency (ms)": sum(latencies) / len(latencies) if latencies else 0.0,
+            "Hit-Community": "--",
+            "CommCoverage":  "--",
             "Path-F1": "--",
         }
 
@@ -94,6 +96,8 @@ def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
             "Hits@3": sum(h3s) / len(h3s) if h3s else 0.0,
             "LeadTime (days)": _lead_time(series_scores, events, thresh=1.0),
             "Latency (ms)": sum(latencies) / len(latencies) if latencies else 0.0,
+            "Hit-Community": "--",
+            "CommCoverage":  "--",
             "Path-F1": "--",
         }
 
@@ -333,91 +337,100 @@ def benchmark_full(
         root_node = max(root_nodes, key=lambda n: cent_scores.get(n, 0.0)) if root_nodes else None
 
         # paths
+        path_scores: Dict[Any, float] = {}
+        paths_by_target = {}
+        if root_node is not None:
+            pcfg = PathConfig(
+                t_start = float(pd.Timestamp(t_s).timestamp()),
+                t_end = float(pd.Timestamp(t_e).timestamp()),
+                strict_increase = strict_increase,
+                alpha = alpha, beta=beta, gamma=gamma,
+                k_paths = k_paths,
+                targets = None,
+                similarity_scores=None
+            )
         
+        _, _, _D, paths_by_target, _records = analyzer.analyze_with_paths(
+            k_neighbors=k_neighbors,
+            t_start=pcfg.t_start,
+            t_end=pcfg.t_end,
+            path_cfg=pcfg,
+            explain=False
+        )
 
+        for _t, paths in (paths_by_target or {}).items():
+            for p in paths:
+                for v in p:
+                    path_scores[v] = path_scores.get(v, 0.0) + 1.0   
+
+        
+        # C） aggregation
+        all_nodes = set(comm_scores.keys()) | set(path_scores.keys())
+        if not all_nodes:
+            latencies.append((time.perf_counter() - tic) * 1000.0)
+            continue
+
+        fused = {n: fuse_lambda * path_scores.get(n, 0.0) + (1- fuse_lambda) * comm_scores.get(n, 0.0)
+                 for n in all_nodes}
+        
+        latencies.append((time.perf_counter() - tic) * 1000.0)
+
+        norm = _zscore(fused)
+        series_scores.append((t_eval, norm))
+
+        if ev:
+            mrr, h3 = _rank_metrics(norm, ev["targets"])
+            mrrs.append(mrr); h3s.append(h3)
+            f1s.append(_f1_from_paths(paths_by_target, set(ev["targets"])))
+
+    return {
+        "Full": {
+            "MRR": sum(mrrs)/len(mrrs) if mrrs else 0.0,
+            "Hits@3": sum(h3s)/len(h3s) if h3s else 0.0,
+            "LeadTime (days)": _lead_time(series_scores, events, thresh=1.0),
+            "Latency (ms)": sum(latencies)/len(latencies) if latencies else 0.0,
+            "Hit-Community": sum(hit_comm_flags)/len(hit_comm_flags) if hit_comm_flags else 0.0,
+            "CommCoverage":  sum(coverages)/len(coverages) if coverages else 0.0,
+            "Path-F1": sum(f1s)/len(f1s) if f1s else 0.0,
+        }
+    }
 
 if __name__ == "__main__":
 
-    # load dependency graph with cve info
-    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
+    data_dir = Path.cwd().parent.joinpath("data")
 
-    with cve_depdata_path.open('rb') as fr:
-        depgraph = pickle.load(fr)
+    # core inputs
+    dep_path   = data_dir.joinpath("dep_graph_cve.pkl")
+    # cache from root_ana
+    node_texts_path = data_dir.joinpath("nodeid_to_texts.pkl")
+    per_cve_path = data_dir.joinpath("per_cve_scores.pkl")  
+    node_scores_path = data_dir.joinpath("node_cve_scores.pkl")
+    # cache from vamana
+    cve_meta_path = data_dir.joinpath("cve_records_for_meta.pkl")
+
+    # ---------- load dependency graph -----------
+    with dep_path.open("rb") as f:
+        depgraph = pickle.load(f)
     
-    # generate cve_records_for_meta
-    nodeid_to_texts: Dict[Any, List[str]] = {}
-    cve_records_for_meta: Dict[Any, List[Dict[str, Any]]] = {}
-    fallback_used = 0
-    osv_hits = 0
-    dropped = 0
+    # ---------- load nodeid_to_texts & cve_records_for_meta -----------
+    nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
+    cve_records_for_meta = pickle.loads(cve_meta_path.read_bytes())
+    print("[cache] nodeid_to_texts & cve_records_for_meta loaded")
+
+    # ---------- load per_cve_scores & node_cve_scores -----------
+    per_cve_scores = None
+    node_cve_scores = None
+    if per_cve_path.exists():
+        per_cve_scores = pickle.loads(per_cve_path.read_bytes())
+        print("[cache] per_cve_scores loaded")
+    if node_scores_path.exists():
+        node_cve_scores = pickle.loads(node_scores_path.read_bytes())
+        print("[cache] node_cve_scores loaded")
     
-    TEXT_KEYS = ["details", "summary", "description"]
+    # --------- centrality provider ---------
+    tempcent = TempCentricity(depgraph, search_scope="auto")
 
-    # warm up the persistent cache once per unique CVE id
-    unique_cve_ids = {
-        cid for _, attrs in depgraph.nodes(data=True) 
-        for cid in ([_normalize_cve_id(x) for x in (attrs.get("cve_list") or [])])
-        if cid
-    }
-
-    for cid in unique_cve_ids:
-        try:
-            _ = osv_cve_api(cid)
-        except Exception:
-            pass
-    
-    for nid, attrs in depgraph.nodes(data=True):
-        raw_list = attrs.get("cve_list", []) or []
-        texts: List[str] = []
-        metas: List[Dict[str, Any]] = []
-
-        for raw in raw_list:
-            cid = _normalize_cve_id(raw)
-            if not cid:
-                dropped += 1
-                continue
-
-            # Try OSV first
-            rec: Dict[str, Any] = {}
-            try:
-                rec = osv_cve_api(cid) or {}
-            except Exception as e:
-                rec = {"_error": str(e)}
-            
-            text = _first_nonempty(rec, TEXT_KEYS)
-            
-            # Fallback: synthesize a minimal text from the node's dict if OSV had nothing
-            if not text and isinstance(raw, dict):
-                text = _synth_text_from_dict(cid, raw)
-                if text:
-                    fallback_used += 1
-            elif text:
-                osv_hits += 1
-
-            if not text:
-                dropped += 1
-                continue
-
-            texts.append(text)
-            metas.append({
-                "name": rec.get("id") or rec.get("name") or cid,
-                "severity": rec.get("severity") or rec.get("cvss") or rec.get("cvssScore"),
-                "timestamp": rec.get("published") or rec.get("modified"),
-            })
-        
-        if texts:
-            nodeid_to_texts[nid] = texts
-            cve_records_for_meta[nid] = metas
-    
-    if not nodeid_to_texts:
-        raise RuntimeError("No CVE texts found. Nodes had empty cve_list or OSV lookups returned no detail.")
-
-    # create tempcent instance
-    tempcent = TempCentricity(depgraph, search_scope='auto')
-
-    # -------- build t_eval_list --------------
-
-    # global data bounds from cve_records_for_meta
+    # --------- build evaluation timeline ----------
     earliest = min(
         d for d in (
             _first_cve_data_of_node(metas)
@@ -432,35 +445,53 @@ if __name__ == "__main__":
         ) if d is not None
     )
 
-    lookback_days = 90        # window length
-    stride_days   = 7         # eval cadence (weekly)
+    lookback_days = 90
+    stride_days   = 7
 
-    # start a bit earlier so the first window has context
-    start = earliest - timedelta(days=lookback_days + 1)
-
+    start = earliest - timedelta(days=lookback_days+1)
     t_eval_list = [d.date() for d in pd.date_range(start=start, end=latest, freq=f"{stride_days}D", inclusive="both")]
 
     events = build_events_from_vamana_meta(
-            depgraph,
-            cve_records_for_meta,
-            t_eval_list,
-            fallback_to_release=True, 
+        depgraph,
+        cve_records_for_meta,
+        t_eval_list,
+        fallback_to_release=True
     )
 
-    # create window function
+    # ------- time window iterator ---------
     ref_type = pd.Timestamp.now(tz="UTC")
-
     def window_iter():
         for d_eval in t_eval_list:
-            d_s = d_eval - timedelta(days = lookback_days)
+            d_s = d_eval - timedelta(days=lookback_days)
             d_e = d_eval
             yield (
                 _to_same_type(d_s, ref_type),
                 _to_same_type(d_e, ref_type),
-                d_eval, 
+                d_eval,
             )
 
-    metrics = benchmark_centrality(tempcent, events, window_iter)
-    print(metrics)
+    # --------- Run Benchmarks ---------
+    all_metrics = {}
 
+    # centrality
+    cen = benchmark_centrality(tempcent, events, window_iter)
+    all_metrics.update(cen)
 
+    # community 
+    if node_cve_scores is None:
+        node_cve_scores = {n: 0.0 for n in depgraph.nodes()}
+        print("[warn] node_cve_scores not found, using dummy scores")
+    
+    comm = benchmark_community(depgraph, tempcent, node_cve_scores, events, window_iter)
+    all_metrics.update(comm)
+
+    # path & full
+    pathm = benchmark_paths(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
+                            k_neighbors=15, alpha=1.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False)
+    all_metrics.update(pathm)
+
+    fullm = benchmark_full(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
+                           k_neighbors=15, alpha=1.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, fuse_lambda=0.6)
+    all_metrics.update(fullm)
+
+    print(all_metrics)
