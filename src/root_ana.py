@@ -13,13 +13,12 @@ from cent.temp_cent import TempCentricity
 from com.commdet import TemporalCommDetector
 import random
 from cve.cveinfo import osv_cve_api 
-from cve.cvescore import load_cve_seve_json, cve_score_dict_gen, _normalize_cve_id
+from cve.cvescore import load_cve_seve_json, node_cve_score_agg, cve_score_dict_gen, _normalize_cve_id
 import pickle
 from utils.util import _first_nonempty, _synth_text_from_dict, _median
 import argparse
 import time
 from search.sideeval import _hop_distance, _sim_from_dist
-# from wins.tempwins import _sliding_windows_from_range
 
 Scope = Literal["window", "global", "auto"]
 
@@ -40,7 +39,7 @@ class RootCauseAnalyzer:
     def __init__(
         self,
         vamana: VamanaOnCVE,
-        cve_scores: Dict[int, float],
+        node_cve_scores: Dict[int, float],
         timestamps: Dict[int, float],
         centrality: TempCentricity,
         search_scope: Scope = "auto",
@@ -48,10 +47,11 @@ class RootCauseAnalyzer:
         '''
         args:
             timestamps: global mapping of node_id -> timestamp (float)
+
         '''
 
         self.vamana = vamana
-        self.cve_scores = cve_scores
+        self.node_cve_scores = node_cve_scores
         self.timestamps = timestamps
         self.centrality = centrality   
         self.search_scope = search_scope
@@ -59,7 +59,7 @@ class RootCauseAnalyzer:
         self._detector = TemporalCommDetector(
             dep_graph=vamana.dep_graph,
             timestamps=timestamps,
-            cve_scores=cve_scores,
+            cve_scores=node_cve_scores,
             centrality_provider=centrality,
         )
 
@@ -385,24 +385,51 @@ class RootCauseAnalyzer:
         return root_comm, root_node, diagnostics
 
 
-def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True):
-    # data path
-    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
+def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True, force_rebuild=False):
+    # -------------- data path ---------------
+    data_dir = Path.cwd().parent.joinpath("data")
+
+    cve_depdata_path       = data_dir.joinpath("dep_graph_cve.pkl")
+    cve_agg_data_dict_path = data_dir.joinpath("aggregated_data.json")
+    per_cve_scores_path    = data_dir.joinpath("per_cve_scores.pkl")
+    node_cve_scores_path   = data_dir.joinpath("node_cve_scores.pkl")
+    node_texts_path        = data_dir.joinpath("nodeid_to_texts.pkl")
+
     with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
 
     nodes = list(depgraph.nodes)
 
-    unique_cve_ids = {
-        cid for _, attrs in depgraph.nodes(data=True) 
-        for cid in ([_normalize_cve_id(x) for x in (attrs.get("cve_list") or [])])
-        if cid
-    }
+    # ---------- prepare CVE scores -------------
+    if per_cve_scores_path.exists() and not force_rebuild:
+        per_cve_scores = pickle.loads(per_cve_scores_path.read_bytes())
+        print(f"[cache] Loaded per_cve_scores from {per_cve_scores_path}")
+    else:
+        unique_cve_ids = {
+            cid for _, attrs in depgraph.nodes(data=True) 
+            for cid in ([_normalize_cve_id(x) for x in (attrs.get("cve_list") or [])])
+            if cid
+        }
 
-    cve_agg_data_dict_path = Path.cwd().parent.joinpath("data", "aggregated_data.json")
-    cve_agg_data_dict = load_cve_seve_json(cve_agg_data_dict_path)
-    cve_scores = cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict)
+        cve_agg_data_dict = load_cve_seve_json(cve_agg_data_dict_path)
+        # generate mapping from cve_id -> score
+        per_cve_scores = cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict)
+        per_cve_scores_path.write_bytes(pickle.dumps(per_cve_scores))
+        print(f"[build] Saved per_cve_scores -> {per_cve_scores_path}")
 
+    # ---------- prepare node CVE scores -------------
+    if node_cve_scores_path.exists() and not force_rebuild:
+        node_cve_scores = pickle.loads(node_cve_scores_path.read_bytes())
+        print(f"[cache] Loaded node_cve_scores from {node_cve_scores_path}")
+    else:
+        node_cve_scores = {
+            n: node_cve_score_agg(depgraph, n, per_cve_scores, agg="sum")
+            for n in depgraph.nodes()
+        }
+        node_cve_scores_path.write_bytes(pickle.dumps(node_cve_scores))
+        print(f"[build] Saved node_cve_scores -> {node_cve_scores_path}")
+    
+    # ---------- Timestamps / Models -------------
     try:
         timestamps = {n: float(depgraph.nodes[n]["timestamp"]) for n in nodes}
     except KeyError:
@@ -411,34 +438,44 @@ def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True):
     centrality = TempCentricity(depgraph, search_scope)
     embedder = CVEVector()
 
-    nodeid_to_texts = {}
-    TEXT_KEYS = ["details", "summary", "description"]
+    # ---------- prepare node texts -------------
+    if node_texts_path.exists() and not force_rebuild:
+        nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
+        print(f"[cache] Loaded nodeid_to_texts from {node_texts_path}")
+    else:
+        nodeid_to_texts: Dict[Any, List[str]] = {}
+        TEXT_KEYS = ["details", "summary", "description"]
 
-    for nid, attrs in depgraph.nodes(data=True):
-        raw_list = attrs.get("cve_list", []) or []
-        texts = []
-        for raw in raw_list:
-            cid = _normalize_cve_id(raw)
-            try:
-                rec = osv_cve_api(cid) or {}
-            except Exception as e:
-                rec = {"_error": str(e)}
-            text = _first_nonempty(rec, TEXT_KEYS)
-            if not text and isinstance(raw, dict):
-                text = _synth_text_from_dict(cid, raw)
-            texts.append(text)
-        if texts:
-            nodeid_to_texts[nid] = texts
+        for nid, attrs in depgraph.nodes(data=True):
+            raw_list = attrs.get("cve_list", []) or []
+            texts = []
+            for raw in raw_list:
+                cid = _normalize_cve_id(raw)
+                try:
+                    rec = osv_cve_api(cid) or {}
+                except Exception as e:
+                    rec = {"_error": str(e)}
+                text = _first_nonempty(rec, TEXT_KEYS)
+                if not text and isinstance(raw, dict):
+                    text = _synth_text_from_dict(cid, raw)
+                texts.append(text)
+            if texts:
+                nodeid_to_texts[nid] = texts
 
-    if not nodeid_to_texts:
-        raise RuntimeError("No CVE texts found.")
+        if not nodeid_to_texts:
+            raise RuntimeError("No CVE texts found.")
+        
+        # save to file
+        node_texts_path.write_bytes(pickle.dumps(nodeid_to_texts))
+        print(f"[build] Saved nodeid_to_texts -> {node_texts_path}")
 
+    # ---------- downstream ----------
     ann = VamanaSearch()
     vamana = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
 
     analyzer = RootCauseAnalyzer(
         vamana=vamana,
-        cve_scores=cve_scores,
+        cve_scores=node_cve_scores,
         timestamps=timestamps,
         centrality=centrality,
     )
@@ -448,7 +485,7 @@ def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True):
     t_e = all_ts[3 * len(all_ts) // 4]
 
     def _cve_score_lookup(cve_id: str) -> float:
-        return cve_scores.get(cve_id, 0.0)
+        return per_cve_scores.get(cve_id, 0.0)
 
     print("Running RootCauseAnalyzer...")
 
@@ -469,7 +506,7 @@ def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True):
         print(f"Root node: {root_node}")
         print({
             "cve_id": nd.get("cve_id"),
-            "cve_score": cve_scores[root_node],
+            "cve_score": node_cve_scores[root_node],
             "timestamp": timestamps[root_node],
         })
 

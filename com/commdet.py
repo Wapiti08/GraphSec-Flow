@@ -87,7 +87,6 @@ class TemporalCommDetector:
         
         return CommunityResult(partition=partition, comm_to_nodes=comm_to_nodes)
     
-    
     # --------- scoring ---------
     def _community_score(
         self,

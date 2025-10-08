@@ -10,7 +10,7 @@ import math
 import re
 import json
 from pathlib import Path
-from typing import Dict, Any, Iterable, Optional
+from typing import Dict, Any, Iterable, Optional, Tuple
 from cve.cveinfo import osv_cve_api
 
 
@@ -52,7 +52,7 @@ def cvss31_base_score(vector: str) -> float:
     Implements the official base metrics formula.
     """
     if not vector or not vector.startswith("CVSS:3.1/"):
-        return ValueError("Not a CVSS3.1 vector")
+        return 0.0
     
     # Parse metrics
     parts = dict(m.split(":") for m in vector.split("/")[1:])  # drop "CVSS:3.1"
@@ -94,6 +94,19 @@ def cvss31_base_score(vector: str) -> float:
     # CVSS "round up" to one decimal: ceil(x*10)/10
     return math.ceil(base * 10.0) / 10.0
 
+def iter_cve_entries(cve_list):
+    '''
+    convert node.cve_list to tuples of (cve_id, severity_str, vector_str)
+    '''
+    if not cve_list:
+        return
+    for it in cve_list:
+        if not isinstance(it, dict):
+            continue
+        cid = _normalize_cve_id(it) 
+        if not cid:
+            continue
+        yield cid, it.get("severity")
 
 def load_cve_seve_json(path: Path) -> Dict[str, str]:
     '''
@@ -158,24 +171,58 @@ def cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict):
             cve_score_dict[cve_id] = score
     return cve_score_dict
 
-def node_cve_score_agg(n, depgraph, per_cve_scores, t_s=None, t_e=None, agg="sum"):
+def node_cve_score_agg(depgraph, node_id, per_cve_scores, 
+                        t_s=None, t_e=None, 
+                        agg="sum",
+                        prefer_per_cve: bool = True,
+                        ):
     '''
     Aggregate the CVE scores for a given node n in depgraph.
     If t_s and t_e are given, only consider CVEs whose timestamps fall within [t_s, t_e].
     
     args:
-        n: node id
+        node_id: node id
         depgraph: the dependency graph (networkx graph)
         per_cve_scores: dict of cve_id -> score
         t_s: start timestamp (inclusive)
         t_e: end timestamp (inclusive)
-        agg: aggregation method, either "sum" or "max"
+        agg: aggregation method, either "sum" or "max" or "mean"
     
     return:
         aggregated score (float)
     '''
-    raw_list = (depgraph.nodes[n].get("cve_list") or []) if depgraph.has_node(n) else []
+    items = depgraph.nodes[node_id].get("cve_list")
     vals = []
+    if not items:
+        return 0.0
 
-    for raw in raw_list:
-        
+    vals = []
+    for cid, sev in iter_cve_entries(items):
+        s = None
+        rec = per_cve_scores.get(cid)
+        if prefer_per_cve and rec is not None:
+            # float or {"score": float}
+            if isinstance(rec, dict):
+                s = rec.get("score")
+            elif isinstance(rec, (int, float)):
+                s = float(rec)
+        if s is None:
+            s = map_severity_to_score(sev)
+
+        if s is not None:
+            vals.append(float(s))
+
+    if not vals:
+        return 0.0
+
+    if agg == "sum":
+        return sum(vals)
+    elif agg == "max":
+        return max(vals)
+    elif agg == "mean":
+        return sum(vals) / len(vals)
+    elif agg == "decay_mean":
+        return sum(vals) / len(vals)
+    else:
+        return sum(vals)
+            
