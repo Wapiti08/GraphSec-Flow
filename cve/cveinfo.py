@@ -175,9 +175,11 @@ def osv_cve_api(cve_id):
 #         print(f"Failed to retrieve CVE info. Status code: {response.status_code}")
 #         return None
 
-
-
 if __name__ == "__main__":
+    # read aggregated_data.json
+    data_path = Path.cwd().parent.joinpath("data").joinpath("aggregated_data.json")
+    
+
     # Example usage
     cve_id = "BIT-jenkins-2023-36478"
     osv_id = "OSV-2020-111"

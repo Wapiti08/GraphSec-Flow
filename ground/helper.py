@@ -11,7 +11,6 @@ from cve.cvescore import _nvd_infer_packages_from_cpe, _nvd_extract_references
 
 ISO_FMT = "%Y-%m-%d"
 
-
 def parse_date(s: Optional[str]) -> Optional[datetime]:
     if not s:
         return None

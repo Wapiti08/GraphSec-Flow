@@ -475,7 +475,7 @@ def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, for
 
     analyzer = RootCauseAnalyzer(
         vamana=vamana,
-        cve_scores=node_cve_scores,
+        node_cve_scores=node_cve_scores,
         timestamps=timestamps,
         centrality=centrality,
     )
