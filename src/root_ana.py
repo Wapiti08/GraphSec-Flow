@@ -385,7 +385,7 @@ class RootCauseAnalyzer:
         return root_comm, root_node, diagnostics
 
 
-def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True, force_rebuild=False):
+def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, force_rebuild=False, t_s=None, t_e=None):
     # -------------- data path ---------------
     data_dir = Path.cwd().parent.joinpath("data")
 
@@ -480,9 +480,14 @@ def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True, f
         centrality=centrality,
     )
     
-    all_ts = sorted(timestamps.values())
-    t_s = all_ts[len(all_ts) // 4]
-    t_e = all_ts[3 * len(all_ts) // 4]
+    # --------- the t_s and t_e can be optimized time window ---------
+    if t_s is None or t_e is None:
+        all_ts = sorted(timestamps.values())
+        t_s = all_ts[len(all_ts) // 4]
+        t_e = all_ts[3 * len(all_ts) // 4]
+        print(f"[auto] Using default time window: t_s={t_s}, t_e={t_e}")
+    else:
+        print(f"[user] Using provided time window: t_s={t_s}, t_e={t_e}")
 
     def _cve_score_lookup(cve_id: str) -> float:
         return per_cve_scores.get(cve_id, 0.0)
@@ -512,8 +517,13 @@ def main(query_vec = None, search_scope='auto', explain=True, k=15, diag=True, f
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run RootCauseAnalyzer on a query vector")
+    # description of this cve will be coverted to a query vector by CVEVector
     parser.add_argument("--cve_id", type=str, required=True, help="cve_id to form query vector")
     parser.add_argument("--k", type=int, default=15, help="Number of nearest neighbors")
+    # the time window for temporal subgraph --- should get from temporal analysis
+    parser.add_argument("--t_s", type=float, default=None, help="Start timestamp for analysis window")
+    parser.add_argument("--t_e", type=float, default=None, help="End timestamp for analysis window")
+
     parser.add_argument("--scope", choices=["window", "global", "auto"], default="auto", help="Search only in window, globally, or auto")
     parser.add_argument("--diag", type=bool, default=True, help="Whether to return diagnostics")
     parser.add_argument("--explain", type=bool, default=True, help="Whether to explain search results")
@@ -524,4 +534,7 @@ if __name__ == "__main__":
     cvevector = CVEVector()
     emb = cvevector.encode(cve_data["details"]) 
 
-    main(query_vec=emb, k=args.k, search_scope=args.scope, explain = args.explain, diag=args.diag)
+    main(query_vec=emb, k=args.k, search_scope=args.scope, explain = args.explain, 
+         diag=args.diag,
+        t_s=args.t_s,
+        t_e=args.t_e)

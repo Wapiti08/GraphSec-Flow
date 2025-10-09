@@ -130,5 +130,4 @@ class TemporalCommDetector:
         return best_comm, cent_scores
     
 
-if __name__ == "__main__":
     

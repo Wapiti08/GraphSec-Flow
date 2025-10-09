@@ -16,6 +16,9 @@ from wins.tempwins_tuning import make_build_series_fn, recommend_window_params
 from utils.helpers import agg_network_influence
 import functools
 from bisect import bisect_left, bisect_right
+from cent.helper import _build_time_index, _iter_windows, _node_in_window
+import numpy as np
+import scipy.sparse as sp
 
 class TempCentricity:
     """ Calculate temporal centricity for nodes in a graph
@@ -135,6 +138,44 @@ class TempCentricity:
         else:
             return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
 
+
+# speed up tempcentricity computation with centrality based filtering first
+def _probe_score_for_r(G, r, top_agg="sum"):
+    ''' Use degree centrality to run a circle on a non-overlapping sliding window with step=win, 
+    and take the maximum window score as the score of r
+    
+    '''
+    t_min, t_max = _build_time_index(G)
+    T = t_max - t_min
+    if T<=0:
+        return -np.inf
+    win = max(1e-12, float(r) * T)
+    step = win
+    best = -np.inf
+    for t_s, t_e in _iter_windows(t_min, t_max, win, step):
+        nodes = _node_in_window(G, t_s, t_e)
+        if len(nodes) < 2:
+            continue   
+        H = G.subgraph(nodes)
+        deg = nx.degree_centrality(H)
+        if not deg:
+            continue
+        val = (sum(deg.values()) if top_agg == "sum"
+               else (max(deg.values()) if top_agg == "max"
+                     else np.mean(list(deg.values()))))
+        if val > best:
+            best = val
+    return best
+
+def probe_topk_r_candidates(G, r_candidates, topk=5, agg="sum"):
+    scored = []
+    for r in r_candidates:
+        s = _probe_score_for_r(G, r, top_agg=agg)
+        scored.append((r, float(s)))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return tuple(r for r, _ in scored[:topk])
+
+
 if __name__ == "__main__":
     # data path
     depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
@@ -145,9 +186,11 @@ if __name__ == "__main__":
 
     # initialize tempcentricity
     tempcent = TempCentricity(depgraph, search_scope='auto')
-
+    
     # create build_series_fn
     build_series_fn = make_build_series_fn(tempcent, agg_fn=lambda pr: agg_network_influence(pr, method="entropy"))
+
+    r_top = probe_topk_r_candidates(depgraph, r_candidates=(0.5, 0.65, 0.8, 0.9), topk=3, agg="sum")
 
     best = recommend_window_params(
         G = depgraph,
@@ -155,7 +198,7 @@ if __name__ == "__main__":
         N_min=100,
         alpha=0.8,
         coverage=0.95,
-        r_candidates=(0.5, 0.65, 0.8),
+        r_candidates=r_top,
         beta=1.0
     )
 
