@@ -146,14 +146,6 @@ if __name__ == "__main__":
     # initialize tempcentricity
     tempcent = TempCentricity(depgraph, search_scope='auto')
 
-    # calculate degree centrality in the time window
-    # t_s, t_e = 100, 300
-
-    # degree_cent = tempcent.degree_centrality(t_s, t_e)
-    # print("degree centrality:", degree_cent)
-    # eigen_cent = tempcent.eigenvector_centrality(t_s, t_e)
-    # print("eigenvector centrality:", eigen_cent)
-
     # create build_series_fn
     build_series_fn = make_build_series_fn(tempcent, agg_fn=lambda pr: agg_network_influence(pr, method="entropy"))
 

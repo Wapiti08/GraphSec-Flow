@@ -340,9 +340,9 @@ def recommend_window_params(
 
 def make_build_series_fn(tempcent_obj, agg_fn: Callable[[Dict], float]):
     """
-    Returns a callable build_series_fn(win_size, step_size) that uses your
+    Returns a callable build_series_fn(win_size, step_size) that uses
     TempCentricity implementation and aggregation to produce a scalar series.
-    tempcent_obj must implement .eigenvector_centrality(t_s, t_e) (or similar).
+    tempcent_obj must implement .eigenvector_centrality(t_s, t_e)
     agg_fn maps from {node: centrality} -> scalar.
     """
     def build_series(win_size: float, step_size: float):

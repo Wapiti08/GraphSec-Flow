@@ -12,7 +12,8 @@ from cve.cvevector import CVEVector
 import networkx as nx
 from cve import cveinfo
 from cve.cveinfo import osv_cve_api
-from cve.cvescore import _normalize_cve_id
+from cve.cvescore import _normalize_cve_id,_nvd_pick_cvss_v31, _nvd_extract_references, _nvd_infer_packages_from_cpe
+from cve.cvescore import _osv_pick_cvss_v3, _osv_extract_references, _osv_infer_packages, _osv_extract_fix_commits
 from typing import Dict, List, Tuple, Optional, Any
 import math
 import heapq
@@ -270,6 +271,47 @@ class VamanaOnCVE:
 
         return neighbors, explanations
 
+def _append_meta_from_raw(metas: List[Dict[str, Any]], raw: Dict[str, Any]):
+    src = (raw or {}).get("source")
+    data = (raw or {}).get("data") or {}
+
+    if src == "nvd":
+        for it in (data.get("vulnerabilities") or []):
+            cve = it.get("cve") or {}
+            cid = cve.get("id")
+            base, vec, sev_src = _nvd_pick_cvss_v31(cve)
+            metas.append({
+                "name": cid,
+                "timestamp": cve.get("published") or cve.get("lastModified"),
+                "severity": {
+                    "base_score": base,
+                    "vector": vec,
+                    "source": sev_src or "NVD"
+                },
+                "references": _nvd_extract_references(cve),
+                "packages": _nvd_infer_packages_from_cpe(cve),
+                "source": "NVD",
+            })
+    
+    elif src == "osv":
+        # OSV single record
+        cid = data.get("id")
+        base, vec, sev_src = _osv_pick_cvss_v3(data)
+        metas.append({
+            "name": cid,
+            "timestamp": data.get("published") or data.get("modified"),
+            "severity": {
+                "base_score": base,   # often None
+                "vector": vec,
+                "source": sev_src or "OSV"
+            },
+            "references": _osv_extract_references(data),
+            "packages": _osv_infer_packages(data),
+            "fix_commits": _osv_extract_fix_commits(data),
+            "source": "OSV",
+        })
+
+
 def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
     '''
     return:
@@ -343,11 +385,7 @@ def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
                 continue
 
             texts.append(text)
-            metas.append({
-                "name": rec.get("id") or rec.get("name") or cid,
-                "severity": rec.get("severity") or rec.get("cvss") or rec.get("cvssScore"),
-                "timestamp": rec.get("published") or rec.get("modified"),
-            })
+            _append_meta_from_raw(metas, raw)
         
         if texts:
             nodeid_to_texts[nid] = texts

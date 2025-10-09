@@ -36,8 +36,10 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Iterable, Set, Any
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-
-
+from utils.util import read_jsonl, write_jsonl
+from ground.helper import smoke_dep_graph, smoke_nvd_jsonl, smoke_osv_jsonl, read_jsonl, split_cve_meta_to_builder_inputs
+import time
+from cve.cvescore import _osv_extract_fix_commits
 # --------------------------------
 # Data Models
 # --------------------------------
@@ -91,6 +93,7 @@ class ReferencePath:
             "confidence": round(self.confidence, 4),
         }
 
+@dataclass
 class Node:
     id: str
     package: str
@@ -106,14 +109,14 @@ class Edge:
 class DepGraph:
     ''' Time-aware directed graph of package dependencies, using adjcency list representation.'''
     def __init__(self):
-        self.nodes: Dict[str, None] = {}
+        self.nodes: Dict[str, Node] = {}
         # adjacency list
         self.adj: Dict[str, List[Edge]] = defaultdict(list)
         # reverse adjacency list
         self.rev: Dict[str, List[Edge]] = defaultdict(list)
     
     @staticmethod
-    def from_json(obj, Dict[str, Any]):
+    def from_json(obj: Dict[str, Any]):
         g = DepGraph()
         for n in obj.get("nodes", []):
             if not isinstance(n, dict):
@@ -210,22 +213,6 @@ class GTBuilder:
                 if sv:
                     versions.add(str(sv))
         return versions
-
-    @staticmethod
-    def _osv_extract_fix_commits(record: Dict[str, Any]) -> Set[str]:
-        commits: Set[str] = set()
-        for af in record.get("affected", []) or []:
-            for rng in af.get("ranges", []) or []:
-                for ev in rng.get("events", []) or []:
-                    if "fixed" in ev:
-                        commits.add(str(ev["fixed"]))
-        for ref in record.get("references", []) or []:
-            if str(ref.get("type", "")).upper() == "FIX":
-                url = str(ref.get("url", ""))
-                m = re.search(r"/commit/([0-9a-fA-F]{7,40})", url)
-                if m:
-                    commits.add(m.group(1))
-        return commits
     
     @staticmethod
     def _collect_ranges(record: Dict[str, Any]) -> List[VersionRange]:
@@ -257,10 +244,9 @@ class GTBuilder:
             commits.add(val)
         else:
             commits.update(list(val))
-        commits.update(GTBuilder._osv_extract_fix_commits(record))
+        commits.update(_osv_extract_fix_commits(record))
         return list(commits)
 
-    
     def _candidate_nodes_for_package(self, package: str) -> List[Node]:
         return [n for n in self.g.nodes.values() if n.package == package]
 
@@ -344,7 +330,7 @@ class GTBuilder:
                 nodes = list(nodes_unique.values())
                 earliest = self._earliest_node(nodes)
 
-                time_introduced = iso(earliest) if earliest else None
+                time_introduced = iso(earliest.time) if earliest else None
                 fix_commits = sorted(list(item["fix_commits"]))
                 agree = 1.0 if earliest else 0.0
 
@@ -421,14 +407,71 @@ def main():
 
     ap = argparse.ArgumentParser(description="Ground-truth-like reference constructor for vulnerability diffusion studies.")
     ap.add_argument("--dep-graph", required=True)
-    ap.add_argument("--osv", required=False, default=None)
-    ap.add_argument("--nvd", required=False, default=None)
+    ap.add_argument("--cve-meta", required=False, default=None, help="Pre-cached mixed CVE metadata (JSONL): each line has {'source': 'osv'|'nvd', 'data': {...}}")
+    # keep smoke-test for quick sanity checks
+    ap.add_argument("--smoke-test", action="store_true", help="Run an in-memory example (ignores file inputs)")
+
     ap.add_argument("--out-root", required=True)
     ap.add_argument("--out-paths", required=True)
     ap.add_argument("--downstream", action="store_true")
     ap.add_argument("--max-depth", type=int, default=6)
     ap.add_argument("--no-time-constraint", action="store_true")
+
     args = ap.parse_args()
+    t0 = time.time()
+
+    # ---- load inputs ---------
+    if args.smoke_test:
+        g_obj = smoke_dep_graph()
+        osv = smoke_osv_jsonl()
+        nvd = smoke_nvd_jsonl()
+    else:
+        if not args.dep_graph:
+            ap.error("--dep-graph is required unless --smoke-test is used.")
+        g_obj = read_jsonl(args.dep_graph)
+
+        # If pre-cached meta is provided, split to OSV/NVD for the builder
+        if args.cve_meta:
+            cve_meta = read_jsonl(args.cve_meta)
+            osv_records, nvd_records = split_cve_meta_to_builder_inputs(cve_meta)
+        else:
+            osv_records, nvd_records = [], []
+
+    G = DepGraph.from_json(g_obj)
+
+    # ---- Build roots & paths -------
+    builder = GTBuilder(
+        dep_graph=G,
+        osv_records=osv_records,
+        nvd_records=nvd_records,
+        prefer_upstream_direction=not args.downstream
+    )
+
+    t1 = time.time()
+    roots = builder.build_root_causes()
+    t2 = time.time()
+    paths = builder.build_reference_paths(
+        roots=roots, max_depth=args.max_depth, time_constrained=not args.no_time_constraint
+    )
+    t3 = time.time()
+
+    # -------- Write outputs ----------
+    write_jsonl(args.out_root, (r.to_json() for r in roots))
+    write_jsonl(args.out_paths, (p.to_json() for p in paths))
+
+    # -------- Summary ----------
+    print(f"[Summary]")
+    print(f"  Nodes: {len(G.nodes)} | Edges: {sum(len(v) for v in G.adj.values())}")
+    print(f"  CVEs (OSV): {len(osv_records)} | CVEs (NVD): {len(nvd_records)}")
+    print(f"  Roots: {len(roots)} | Paths: {len(paths)}")
+    print(f"[Timing]")
+    print(f"  Load/Init: {(t1 - t0)*1000:.1f} ms")
+    print(f"  Roots    : {(t2 - t1)*1000:.1f} ms")
+    print(f"  Paths    : {(t3 - t2)*1000:.1f} ms")
+    print(f"  Total    : {(t3 - t0)*1000:.1f} ms")
+
+
+
 
     
 
