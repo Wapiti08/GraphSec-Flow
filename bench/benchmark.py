@@ -26,7 +26,6 @@ from cve.cveinfo import osv_cve_api
 from eval.events import _first_cve_data_of_node, _last_cve_data_of_node, _to_same_type
 from datetime import datetime, timedelta
 import pandas as pd
-from com.commdet import VL
 from bench.helper import load_cached_scores, _safe_node_timestamps, _mask_or_fill, _f1_from_paths
 
 def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
@@ -430,8 +429,12 @@ if __name__ == "__main__":
     # --------- centrality provider ---------
     tempcent = TempCentricity(depgraph, search_scope="auto")
 
+    # for debug
+    for k, metas in cve_records_for_meta.items():
+        print(k, _first_cve_data_of_node(metas))
+
     # --------- build evaluation timeline ----------
-    earliest = min(
+    earliest = min( 
         d for d in (
             _first_cve_data_of_node(metas)
             for metas in cve_records_for_meta.values()

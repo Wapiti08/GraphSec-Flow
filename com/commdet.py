@@ -80,6 +80,10 @@ class TemporalCommDetector:
             comm_to_nodes = {i: [n] for i, n in enumerate(subgraph.nodes())}
             return CommunityResult(partition=partition, comm_to_nodes=comm_to_nodes)
 
+        # Convert to undirected if needed
+        if subgraph.is_directed():
+            subgraph = subgraph.to_undirected()
+
         partition = community_louvain.best_partition(subgraph)
         comm_to_nodes: Dict[int, List[int]] = {}
         for node, comm in partition.items():

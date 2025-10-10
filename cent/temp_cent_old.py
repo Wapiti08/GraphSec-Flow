@@ -12,7 +12,7 @@ sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 import networkx as nx
 from pathlib import Path
 import pickle
-from wins.tempwins_tuning import make_build_series_fn_warm, recommend_window_params
+from wins.tempwins_tuning import make_build_series_fn, recommend_window_params
 from utils.helpers import agg_network_influence
 import functools
 from bisect import bisect_left, bisect_right
@@ -69,70 +69,6 @@ class TempCentricity:
             return []
         # index nodes within interval
         return self._nodes_sorted_by_t[L:R]
-
-    @staticmethod
-    def _warm_start_vector(prev_nodes, prev_vec, curr_nodes):
-        ''' Align the feature vector of the previous window to 
-        the node order of the current window as a warm-start
-        
-        '''
-        if prev_nodes is None or prev_vec is None:
-            return None
-        
-        pos = {n: i for i, n in enumerate(prev_nodes)}
-        v0 = np.zeros(len(curr_nodes), dtype=float)
-        hit = 0
-        for i, n in enumerate(curr_nodes):
-            j = pos.get(n, None)
-            if j is not None:
-                v0[i] = prev_vec[j]
-                hit += 1
-        return v0 if hit > 0 else None
-    
-    @staticmethod
-    def _to_csr_undirected(H):
-        ''' Convert NetworkX subgraph to CSR (unweighted, no self-loops, automatic symmetric)
-        
-        '''
-        nodes = list(H.nodes)
-        if not nodes:
-            return nodes, sp.csr_matrix((0,0), dtype=float)
-        
-        idx = {n: i for i, n in enumerate(nodes)}
-        rows, cols = [], []
-        for u, v in H.edges():
-            iu, iv = idx[u], idx[v]
-            if iu == iv:
-                continue
-            # undirected graph, add both directions
-            rows.append(iu); cols.append(iv)
-            rows.append(iv); cols.append(iu)
-        data = np.ones(len(rows), dtype=float)
-        A = sp.csr_matrix((data, (rows, cols)), shape=(len(nodes), len(nodes)), dtype=float)
-        return nodes, A
-
-    @staticmethod
-    def _evc_sparse_power_iter(A: sp.csr_matrix, v0=None, max_iter=200, tol=1e-4):
-        ''' Sparse power EVC (supports warm-start), only for undirected graphs
-        
-        '''
-        n = A.shape[0]
-        if n == 0:
-            return np.empty((0,), dtype=float)
-        x = (np.random.rand(n) if v0 is None else v0).astype(float)
-        nrm = np.linalg.norm(x)
-        x = x/(nrm + 1e-12)
-        for _ in range(max_iter):
-            x_last = x
-            x = A.dot(x)
-            nrm = np.linalg.norm(x)
-            if nrm == 0:
-                break
-            x = x/(nrm + 1e-12)
-            if np.linalg.norm(x - x_last) < tol:
-                break
-        return x
-    
 
     @functools.lru_cache(maxsize=2048)
     def _extract_temporal_subgraph(self, t_s: int, t_e: int):
@@ -209,24 +145,6 @@ class TempCentricity:
         else:
             return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
 
-    @functools.lru_cache(maxsize=1024)
-    def eigenvector_centrality_sparse(self, t_s, t_e, v0=None, max_iter=200, tol=1e-4):
-        H = self.__extract_temporal_subgraph(t_s, t_e)
-        # directed graph uses PageRank as the equalient
-        if H.is_directed():
-            pr = nx.pagerank(H)
-            nodes = list(H.nodes())
-            vec = np.array([pr.get(n, 0.0) for n in nodes], dtype=float)
-            return pr, vec, nodes
-        
-        # undirected graph, use sparse power iteration
-        nodes, A = self._to_csr_undirected(H)
-        if len(nodes) == 0:
-            return {}, None, []
-        vec = self._evc_sparse_power_iter(A, v0=v0, max_iter=max_iter, tol=tol)
-        evc = {nodes[i]: float(vec[i]) for i in range(len(nodes))}
-        return evc, vec, nodes
-
 
 # speed up tempcentricity computation with centrality based filtering first
 def _probe_score_for_r(G, r, top_agg="sum"):
@@ -277,9 +195,7 @@ if __name__ == "__main__":
     tempcent = TempCentricity(depgraph, search_scope='auto')
     
     # create build_series_fn
-    build_series_fn = make_build_series_fn_warm(tempcent, 
-                                                agg_fn=lambda pr: agg_network_influence(pr, method="entropy"),
-                                                max_iter=150, tol=1e-4)
+    build_series_fn = make_build_series_fn(tempcent, agg_fn=lambda pr: agg_network_influence(pr, method="entropy"))
 
     r_top = probe_topk_r_candidates(depgraph, r_candidates=(0.5, 0.65, 0.8, 0.9), topk=3, agg="sum")
 

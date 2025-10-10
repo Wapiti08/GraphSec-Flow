@@ -14,6 +14,7 @@ from typing import List, Tuple, Optional, Dict, Callable
 import numpy as np
 import networkx as nx
 from scipy.signal import find_peaks
+from cent.helper import _build_time_index, _iter_windows, _node_in_window
 
 @dataclass
 class TimeScaleEstimate:
@@ -364,3 +365,40 @@ def make_build_series_fn(tempcent_obj, agg_fn: Callable[[Dict], float]):
             t += float(step_size)
         return np.asarray(centers, dtype=float), np.asarray(scalars, dtype=float)
     return build_series
+
+
+def make_build_series_fn_warm(tempcent_obj, agg_fn, max_iter=150, tol=1e-4):
+
+    t_min, t_max = _build_time_index()
+
+    def build_series_fn(win_size, step_size, t_min_override=None, t_max_override=None):
+        _t_min = t_min if t_min_override is None else t_min_override
+        _t_max = t_max if t_max_override is None else t_max_override
+        centers, scalars = [], []
+
+        prev_nodes, prev_vec = None, None
+        for t_s, t_e in _iter_windows(_t_min, _t_max, win_size, step_size):
+            nodes = _node_in_window(tempcent_obj.graph, t_s, t_e)
+            if len(nodes) < 2:
+                continue
+            H = tempcent_obj._extract_temporal_subgraph(t_s, t_e)
+
+            if H.is_directed():
+                scores = tempcent_obj.eigenvector_centrality(t_s, t_e)
+                val = float(agg_fn(scores))
+                centers.append(0.5 * (t_s + t_e))
+                scalars.append(val)
+                prev_nodes, prev_vec = None, None
+            else:
+                curr_nodes = list(H.nodes())
+                v0 = tempcent_obj._warm_start_vector(prev_nodes, prev_vec, curr_nodes)
+                scores, vec, curr_nodes = tempcent_obj.eigenvector_centrality_sparse(
+                    t_s, t_e, v0=v0, max_iter=max_iter, tol=tol)
+                val = float(agg_fn(scores))
+                centers.append(0.5 * (t_s + t_e))
+                scalars.append(val)
+                prev_nodes, prev_vec = curr_nodes, vec
+            
+        return centers, scalars
+    
+    return build_series_fn

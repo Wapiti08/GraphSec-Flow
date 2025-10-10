@@ -271,11 +271,19 @@ class VamanaOnCVE:
 
         return neighbors, explanations
 
-def _append_meta_from_raw(metas: List[Dict[str, Any]], raw: Dict[str, Any]):
-    src = (raw or {}).get("source")
-    data = (raw or {}).get("data") or {}
+def _append_meta_from_raw(metas: List[Dict[str, Any]], rec: Dict[str, Any]) -> None:
+    '''
+    Append a normalized metadata record into `metas` based on `rec`.
 
-    if src == "nvd":
+    '''
+    
+    if not rec or not isinstance(rec, dict):
+        return
+
+    src = rec.get("source")
+    data = rec.get("data") if isinstance(rec.get("data"), dict) else None
+
+    if src == "nvd" and isinstance(data, dict):
         for it in (data.get("vulnerabilities") or []):
             cve = it.get("cve") or {}
             cid = cve.get("id")
@@ -286,30 +294,33 @@ def _append_meta_from_raw(metas: List[Dict[str, Any]], raw: Dict[str, Any]):
                 "severity": {
                     "base_score": base,
                     "vector": vec,
-                    "source": sev_src or "NVD"
+                    "source": sev_src or "NVD",
                 },
                 "references": _nvd_extract_references(cve),
                 "packages": _nvd_infer_packages_from_cpe(cve),
                 "source": "NVD",
             })
+        return
     
-    elif src == "osv":
-        # OSV single record
-        cid = data.get("id")
-        base, vec, sev_src = _osv_pick_cvss_v3(data)
+    osv_data = data if data else rec
+    if "id" in osv_data or "affected" in osv_data or "references" in osv_data:
+        cid = osv_data.get("id")
+        base, vec, sev_src = _osv_pick_cvss_v3(osv_data)
         metas.append({
             "name": cid,
-            "timestamp": data.get("published") or data.get("modified"),
+            "timestamp": osv_data.get("published") or osv_data.get("modified"),
             "severity": {
-                "base_score": base,   # often None
+                "base_score": base,
                 "vector": vec,
-                "source": sev_src or "OSV"
+                "source": sev_src or "OSV",
             },
-            "references": _osv_extract_references(data),
-            "packages": _osv_infer_packages(data),
-            "fix_commits": _osv_extract_fix_commits(data),
+            "references": _osv_extract_references(osv_data),
+            "packages": _osv_infer_packages(osv_data),
+            "fix_commits": _osv_extract_fix_commits(osv_data),
             "source": "OSV",
         })
+        return
+    return
 
 
 def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
@@ -345,6 +356,7 @@ def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
         if cid
     }
 
+    # warm up the persistent cache once per unique CVE id
     for cid in unique_cve_ids:
         try:
             _ = osv_cve_api(cid)
@@ -385,7 +397,7 @@ def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
                 continue
 
             texts.append(text)
-            _append_meta_from_raw(metas, raw)
+            _append_meta_from_raw(metas, rec)
         
         if texts:
             nodeid_to_texts[nid] = texts
