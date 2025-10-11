@@ -369,7 +369,7 @@ def make_build_series_fn(tempcent_obj, agg_fn: Callable[[Dict], float]):
 
 def make_build_series_fn_warm(tempcent_obj, agg_fn, max_iter=150, tol=1e-4):
 
-    t_min, t_max = _build_time_index()
+    t_min, t_max = _build_time_index(tempcent_obj.graph)
 
     def build_series_fn(win_size, step_size, t_min_override=None, t_max_override=None):
         _t_min = t_min if t_min_override is None else t_min_override

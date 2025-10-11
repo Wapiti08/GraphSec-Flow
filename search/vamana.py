@@ -382,6 +382,9 @@ def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
             except Exception as e:
                 rec = {"_error": str(e)}
             
+            if "source" in rec:
+                rec = rec["data"]
+                
             text = _first_nonempty(rec, TEXT_KEYS)
             
             # Fallback: synthesize a minimal text from the node's dict if OSV had nothing

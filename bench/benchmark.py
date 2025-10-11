@@ -430,8 +430,8 @@ if __name__ == "__main__":
     tempcent = TempCentricity(depgraph, search_scope="auto")
 
     # for debug
-    for k, metas in cve_records_for_meta.items():
-        print(k, _first_cve_data_of_node(metas))
+    # for k, metas in cve_records_for_meta.items():
+    #     print(k, _first_cve_data_of_node(metas))
 
     # --------- build evaluation timeline ----------
     earliest = min( 

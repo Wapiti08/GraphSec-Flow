@@ -303,8 +303,8 @@ class RootCauseAnalyzer:
         # 5) score communities
         root_comm, cent_scores = self._detector.choose_root_community(
             comm_to_nodes=comm_res.comm_to_nodes,
-            t_s=t_s if used_scope=="window" else None,
-            t_e=t_e if used_scope=="window" else None,
+            t_s=t_s if used_scope in ["window", "auto"] else None,
+            t_e=t_e if used_scope in ["window", "auto"] else None,
         )
 
         if root_comm is None:
@@ -455,6 +455,10 @@ def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, for
                     rec = osv_cve_api(cid) or {}
                 except Exception as e:
                     rec = {"_error": str(e)}
+                
+                if "source" in rec:
+                    rec = rec["data"]
+
                 text = _first_nonempty(rec, TEXT_KEYS)
                 if not text and isinstance(raw, dict):
                     text = _synth_text_from_dict(cid, raw)
@@ -531,8 +535,9 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     cve_data = osv_cve_api(args.cve_id)
+    print(cve_data)
     cvevector = CVEVector()
-    emb = cvevector.encode(cve_data["details"]) 
+    emb = cvevector.encode(cve_data["data"]["details"]) 
 
     main(query_vec=emb, k=args.k, search_scope=args.scope, explain = args.explain, 
          diag=args.diag,

@@ -535,6 +535,10 @@ def main():
                 rec = osv_cve_api(cid) or {}
             except Exception as e:
                 rec = {"_error": str(e)}
+            
+            if "source" in rec:
+                rec = rec["data"]
+
             text = _first_nonempty(rec, TEXT_KEYS)
             if not text and isinstance(raw, dict):
                 text = _synth_text_from_dict(cid, raw)

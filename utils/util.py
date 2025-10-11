@@ -85,7 +85,6 @@ def _synth_text_from_dict(cid: str, d: Dict[str, Any]) -> Optional[str]:
     return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]
 
 
-
 def _first_nonempty(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
     for k in keys:
         v = d.get(k)
