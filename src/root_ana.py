@@ -289,6 +289,7 @@ class RootCauseAnalyzer:
             return None, None
         
         # 4) communities
+
         comm_res = self._detector.detect_communities(temp_subgraph)
         if not comm_res.comm_to_nodes:
             if return_diagnostics:
@@ -301,6 +302,7 @@ class RootCauseAnalyzer:
             return None, None
 
         # 5) score communities
+        print(f"time threshold: {t_s} ~ {t_e}, used scope: {used_scope}, ")
         root_comm, cent_scores = self._detector.choose_root_community(
             comm_to_nodes=comm_res.comm_to_nodes,
             t_s=t_s if used_scope in ["window", "auto"] else None,

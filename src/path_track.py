@@ -48,6 +48,7 @@ from search.vamana import VamanaOnCVE, VamanaSearch
 from cve.cvevector import CVEVector
 from cve.cveinfo import osv_cve_api 
 from wins.timeline_links import build_interwins_links
+from cve.cvescore import load_cve_seve_json, node_cve_score_agg, cve_score_dict_gen, _normalize_cve_id
 
 # ----------------- Scoring -----------------
 SEV_WEIGHT = {'CRITICAL':5, 'HIGH':3, 'MODERATE':2, 'MEDIUM':2, 'LOW':1}
@@ -263,7 +264,7 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
     def __init__(self,         
                  depgraph: Any,
                 vamana: VamanaOnCVE,
-                cve_scores: Dict[int, float],
+                node_cve_scores: Dict[int, float],
                 timestamps: Dict[int, float],
                 centrality: TempCentricity,
                 search_scope: Scope = "auto",):
@@ -273,7 +274,7 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
         # (do not pass depgraph to super)
         super().__init__(
                     vamana=vamana,
-                    cve_scores=cve_scores,
+                    node_cve_scores=node_cve_scores,
                     timestamps=timestamps,
                     centrality=centrality,
                     search_scope=search_scope,
@@ -511,10 +512,44 @@ def main():
         if cid
     }
 
+    # define data path
+    data_dir = Path.cwd().parent.joinpath("data")
+
     cve_agg_data_dict_path = Path.cwd().parent.joinpath("data", "aggregated_data.json")
     cve_agg_data_dict = load_cve_seve_json(cve_agg_data_dict_path)
-    cve_scores = cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict)
 
+    node_cve_scores_path   = data_dir.joinpath("node_cve_scores.pkl")
+    per_cve_scores_path    = data_dir.joinpath("per_cve_scores.pkl")
+
+    # ---------- prepare CVE scores -------------
+    if per_cve_scores_path.exists():
+        per_cve_scores = pickle.loads(per_cve_scores_path.read_bytes())
+        print(f"[cache] Loaded per_cve_scores from {per_cve_scores_path}")
+    else:
+        unique_cve_ids = {
+            cid for _, attrs in depgraph.nodes(data=True) 
+            for cid in ([_normalize_cve_id(x) for x in (attrs.get("cve_list") or [])])
+            if cid
+        }
+
+        cve_agg_data_dict = load_cve_seve_json(cve_agg_data_dict_path)
+        # generate mapping from cve_id -> score
+        per_cve_scores = cve_score_dict_gen(unique_cve_ids, cve_agg_data_dict)
+        per_cve_scores_path.write_bytes(pickle.dumps(per_cve_scores))
+        print(f"[build] Saved per_cve_scores -> {per_cve_scores_path}")
+
+    # ---------- prepare node CVE scores -------------
+    if node_cve_scores_path.exists():
+        node_cve_scores = pickle.loads(node_cve_scores_path.read_bytes())
+        print(f"[cache] Loaded node_cve_scores from {node_cve_scores_path}")
+    else:
+        node_cve_scores = {
+            n: node_cve_score_agg(depgraph, n, per_cve_scores, agg="sum")
+            for n in depgraph.nodes()
+        }
+        node_cve_scores_path.write_bytes(pickle.dumps(node_cve_scores))
+        print(f"[build] Saved node_cve_scores -> {node_cve_scores_path}")
+    
     try:
         timestamps = {n: float(depgraph.nodes[n]["timestamp"]) for n in nodes}
     except KeyError:
@@ -556,7 +591,7 @@ def main():
     rcp = RootCausePathAnalyzer(
                             depgraph=graph_obj, 
                             vamana = vamana,
-                            cve_scores=cve_scores,
+                            node_cve_scores=node_cve_scores,
                             timestamps=timestamps,
                             centrality=centrality,
                             search_scope="auto")

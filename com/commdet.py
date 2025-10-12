@@ -121,6 +121,7 @@ class TemporalCommDetector:
         select the best community id according to the scoring rule
         returns (best_comm_id, comm_scores)
         '''
+        print("Extracting root community within time interval", t_s, t_e)
         cent_scores = self.centrality_provider.eigenvector_centrality(t_s, t_e)
         best_comm = None
         best_score = float("-inf")

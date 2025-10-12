@@ -460,6 +460,7 @@ if __name__ == "__main__":
         t_eval_list,
         fallback_to_release=True
     )
+    print(f"[info] {len(events)} evaluation events from {t_eval_list[0]} to {t_eval_list[-1]}")
 
     # ------- time window iterator ---------
     ref_type = pd.Timestamp.now(tz="UTC")
@@ -479,7 +480,8 @@ if __name__ == "__main__":
     # centrality
     cen = benchmark_centrality(tempcent, events, window_iter)
     all_metrics.update(cen)
-
+    print("[info] Centrality benchmark done")
+    
     # community 
     if node_cve_scores is None:
         node_cve_scores = {n: 0.0 for n in depgraph.nodes()}

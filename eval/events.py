@@ -74,19 +74,19 @@ def build_events_from_vamana_meta(
     for nid in depgraph.nodes():
         cves = cve_records_for_meta.get(nid, [])
     
-    t0 = _first_cve_data_of_node(cves)
-    if not t0 and fallback_to_release:
-        rel = depgraph.nodes[nid].get("timestamp")
-        rel_d = None
-        if rel is not None:
-            if isinstance(rel, date) and not isinstance(rel, datetime):
-                rel_d = rel
-            else:
-                rel_d = _to_date(rel)
-            t0 = rel_d
+        t0 = _first_cve_data_of_node(cves)
+        if not t0 and fallback_to_release:
+            rel = depgraph.nodes[nid].get("timestamp")
+            rel_d = None
+            if rel is not None:
+                if isinstance(rel, date) and not isinstance(rel, datetime):
+                    rel_d = rel
+                else:
+                    rel_d = _to_date(rel)
+                t0 = rel_d
 
-        if t0:
-            node_event_date[nid] = t0
+            if t0:
+                node_event_date[nid] = t0
     
     # 2) align with t_eval
     events_map = defaultdict(set)
