@@ -7,6 +7,8 @@
 from datetime import datetime, date
 from collections import defaultdict
 import pandas as pd
+import bisect
+
 
 def _to_date(x):
     ''' convert published/modified timestamp string (2023-09-12T15:15:24Z) in OSV to date
@@ -71,10 +73,34 @@ def build_events_from_vamana_meta(
     # 1) calculate event time for every node: earliest CVE time, if no, fallback to release time
     node_event_date = {}
 
+    # for debug
+    total_nodes = 0
+    got_cve = 0
+    used_release = 0
+    dropped = 0
+
     for nid in depgraph.nodes():
+        
+        # for debug
+        total_nodes += 1
+
         cves = cve_records_for_meta.get(nid, [])
-    
         t0 = _first_cve_data_of_node(cves)
+
+        t_final = None
+        if t0:
+            t_final = _to_date(t0)
+            if t_final:
+                got_cve += 1
+
+        if (t_final is None) and fallback_to_release:
+            rel = depgraph.nodes[nid].get("timestamp")
+            rel_d = _to_date(rel)
+            if rel_d:
+                t_final = rel_d
+                used_release += 1
+
+
         if not t0 and fallback_to_release:
             rel = depgraph.nodes[nid].get("timestamp")
             rel_d = None
@@ -87,9 +113,41 @@ def build_events_from_vamana_meta(
 
             if t0:
                 node_event_date[nid] = t0
+
+        if t_final is not None:
+            node_event_date[nid] = t_final
+        else:
+            dropped += 1
+
+    print(f"[debug] nodes={total_nodes}, with_cve={got_cve}, used_release={used_release}, dropped={dropped}")
+
+    if not t_eval_list:
+        print("[warn] t_eval_list is empty; no events will be produced.")
+        return []
     
+    eval_dates = []
+    for t in t_eval_list:
+        if isinstance(t, date) and not isinstance(t, datetime):
+            eval_dates.append(t)
+        elif isinstance(t, datetime):
+            eval_dates.append(t.date())
+        else:
+            try:
+                eval_dates.append(datetime.fromisoformat(str(t)).date())
+            except Exception:
+                continue
+
+    eval_dates.sort()   
     # 2) align with t_eval
     events_map = defaultdict(set)
+
+    for nid, d0 in node_event_date.items():
+        idx = bisect.bisect_left(eval_dates, d0)
+        if idx == len(eval_dates):
+            continue
+        tkey = eval_dates[idx]
+        events_map[tkey].add(nid)
+
     ref = t_eval_list[0] if t_eval_list else None
 
     for nid, d0 in node_event_date.items():
@@ -104,4 +162,12 @@ def build_events_from_vamana_meta(
             events.append({"t": t, "targets": tg})
     
     events.sort(key=lambda e: e["t"])
+
+    # for debug
+    if events:
+        print(f"[info] {len(events)} evaluation events from {events[0]['t']} to {events[-1]['t']}")
+    else:
+        print(f"[info] 0 evaluation events (eval grid {eval_dates[0]} → {eval_dates[-1]}; "
+              f"mapped nodes={sum(len(v) for v in events_map.values())})")
+
     return events

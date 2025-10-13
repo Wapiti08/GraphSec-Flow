@@ -32,19 +32,32 @@ class VamanaSearch:
         graph: adjacency list mapping node indicies to list of neighbor indices
         entry_point: the entrypoint of graph
     """
-    def __init__(self, M=5, ef_construction=100):
+    def __init__(self, M=32, ef_construction=200, ef_search=128):
+        '''
+        args:
+            m: max number of neighbors per node
+            ef_construction: size of the priority queue during construction
+        '''
         self.M = M
         self.ef_construction = ef_construction
+        self.ef_search = ef_search
         self.data = []
         self.graph = {}
         self.entry_point = None  # index of the graph entry point
 
     def _distance(self, a, b):
-        ''' compute Eudlidean distance between two vectors a and b
+        ''' compute distance between two vectors a and b
         
         '''
-        return np.linalg.norm(a - b)
-    
+        # test wtih euclidean distance
+        # return np.linalg.norm(a - b)
+
+        # test wtih cosine distance
+        a = a / (np.linalg.norm(a) + 1e-12)
+        b = b / (np.linalg.norm(b) + 1e-12)
+
+        return 1.0 - float(np.dot(a, b))
+
     def _select_neighbors(self, candidates, M):
         ''' heuristic to select up to M best neighbors from candidates
 
@@ -98,7 +111,7 @@ class VamanaSearch:
         heap = [(curr_dist, current)]
         topk = [] # will store (-dist, idx) for max-heap
 
-        ef = max(self.ef_construction, k)  # ensure ef is at least k
+        ef = max(self.ef_search, k)  # ensure ef is at least k
 
         while heap and len(visited) < ef:
             dist_top, idx_top = heapq.heappop(heap)
@@ -185,6 +198,8 @@ class VamanaOnCVE:
         for node_id, texts in self.nodeid_to_texts.items():
             for i, text in enumerate(texts):
                 vec = self.embedder.encode(text)
+                # normalize vector --- important
+                vec = vec / (np.linalg.norm(vec) + 1e-12)
                 pid = self.ann.add_point(vec)
                 self.pid_to_pair[pid] = (node_id, i)
                 self.node_to_pids[node_id].append(pid)
@@ -198,7 +213,7 @@ class VamanaOnCVE:
     def _agg_node_scores(
             self,
             raw_hits: List[Tuple[int, float]],
-            agg: str="max"
+            agg: str="mean"
         ):
         per_node = defaultdict(list)
         for pid, sim in raw_hits:
@@ -228,7 +243,7 @@ class VamanaOnCVE:
                query_vec, 
                k = 10,
                M: Optional[int] = None,
-               agg: str = "max",
+               agg: str = "mean",
                return_explanations: bool=False):
         '''
         input: query_vec (np.na)
@@ -242,10 +257,8 @@ class VamanaOnCVE:
         raw_hits: List[Tuple[int, float]] = []
 
         for pid in candidate_pids:
-            # define similarity as negative euclidean distance (larger is better)
-            sim = -self.ann._distance(query_vec, self.ann.data[pid])
+            sim = float(np.dot(query_vec, self.ann.data[pid]))
             raw_hits.append((pid, sim))
-
 
         node_scores, node_best = self._agg_node_scores(raw_hits, agg=agg)
         top_nodes = heapq.nlargest(k, node_scores.items(), key=lambda x: x[1])
@@ -340,7 +353,8 @@ def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
         nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
         cve_records_for_meta = pickle.loads(cve_meta_path.read_bytes())
         print(f"[cache] Loaded nodeid_to_texts & cve_records_for_meta from {data_dir}")
-
+        return nodeid_to_texts, cve_records_for_meta
+    
     print("[info] Rebuilding nodeid_to_texts & cve_records_for_meta from depgraph...")
     TEXT_KEYS = ["details", "summary", "description"]
     nodeid_to_texts: Dict[Any, List[str]] = {}
@@ -464,8 +478,11 @@ if __name__ =="__main__":
         params={
             "M": vac.ann.M,
             "ef_construction": vac.ann.ef_construction,
-            "agg": "max",
-            "similarity": "1/(1+euclidean)"
+            "agg": "mean",
+            # euclidean distance d is converted to similarity as 1/(1+d)
+            # "similarity": "1/(1+euclidean)"
+            # cosine distance d is converted to similarity as 1-d
+            "similarity": "1-cosine"
         }
     )
 
@@ -473,11 +490,14 @@ if __name__ =="__main__":
     any_node = next(iter(nodeid_to_texts))
     sample_text = nodeid_to_texts[any_node][0]
     print(f"[info] Using node {any_node}'s first CVE text as the query.")
+
     query_vec = embedder.encode(sample_text)
+    # normalize query
+    query_vec = query_vec / (np.linalg.norm(query_vec) + 1e-12)
 
     # ------------ run search and print results ------------
     start = time.time()
-    neighbors, explanations = vac.search(query_vec, k=5, agg="max", return_explanations=True)
+    neighbors, explanations = vac.search(query_vec, k=5, agg="mean", return_explanations=True)
     ms = (time.time() - start) * 1000.0
 
     print("\n Top-5 nodes (nearest by CVE text):")
@@ -491,47 +511,4 @@ if __name__ =="__main__":
             print(f"   text: {snip}")
     print(f"\nSearch finished in {ms:.1f} ms")
 
-
-'''
-[eval] node_recall@5: 0.055  MRR: 0.028  (n=200/182165)
-
-[eval] Top 10 most similar CVE text pairs (by 1/(1+d)):
-1. sim=1.0000  A: node=n907449 idx=9 | B: node=n907447 idx=9
-    A: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
-    B: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
-2. sim=1.0000  A: node=n907449 idx=9 | B: node=n10290295 idx=9
-    A: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
-    B: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
-3. sim=1.0000  A: node=n907449 idx=9 | B: node=n10290315 idx=9
-    A: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
-    B: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
-4. sim=1.0000  A: node=n907449 idx=9 | B: node=n10290294 idx=11
-    A: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
-    B: In Apache Tomcat 9.0.0.M1 to 9.0.0.M18 and 8.5.0 to 8.5.12, the handling of an HTTP/2 GOAWAY frame for a connection did …
-5. sim=1.0000  A: node=n907449 idx=1 | B: node=n907490 idx=0
-    A: Incomplete Cleanup vulnerability in Apache Tomcat.When recycling various internal objects in Apache Tomcat from 11.0.0-M…
-    B: Incomplete Cleanup vulnerability in Apache Tomcat.When recycling various internal objects in Apache Tomcat from 11.0.0-M…
-6. sim=1.0000  A: node=n907449 idx=4 | B: node=n907490 idx=1
-    A: Improper Input Validation vulnerability in Apache Tomcat.Tomcat from 11.0.0-M1 through 11.0.0-M11, from 10.1.0-M1 throug…
-    B: Improper Input Validation vulnerability in Apache Tomcat.Tomcat from 11.0.0-M1 through 11.0.0-M11, from 10.1.0-M1 throug…
-7. sim=1.0000  A: node=n907449 idx=5 | B: node=n907490 idx=2
-    A: URL Redirection to Untrusted Site ('Open Redirect') vulnerability in FORM authentication feature Apache Tomcat.This issu…
-    B: URL Redirection to Untrusted Site ('Open Redirect') vulnerability in FORM authentication feature Apache Tomcat.This issu…
-8. sim=1.0000  A: node=n907449 idx=6 | B: node=n907490 idx=3
-    A: In Apache Tomcat 9.0.0.M1 to 9.0.30, 8.5.0 to 8.5.50 and 7.0.0 to 7.0.99 the HTTP header parsing code used an approach t…
-    B: In Apache Tomcat 9.0.0.M1 to 9.0.30, 8.5.0 to 8.5.50 and 7.0.0 to 7.0.99 the HTTP header parsing code used an approach t…
-9. sim=1.0000  A: node=n907449 idx=7 | B: node=n907490 idx=4
-    A: Apache Tomcat 10.0.0-M1 to 10.0.6, 9.0.0.M1 to 9.0.46 and 8.5.0 to 8.5.66 did not correctly parse the HTTP transfer-enco…
-    B: Apache Tomcat 10.0.0-M1 to 10.0.6, 9.0.0.M1 to 9.0.46 and 8.5.0 to 8.5.66 did not correctly parse the HTTP transfer-enco…
-10. sim=1.0000  A: node=n907449 idx=8 | B: node=n907490 idx=6
-    A: If a web application sends a WebSocket message concurrently with the WebSocket connection closing when running on Apache…
-    B: If a web application sends a WebSocket message concurrently with the WebSocket connection closing when running on Apache…
-[eval] wrote report -> vamana_eval_report.json
-[info] Using node n9949684's first CVE text as the query.
-
- Top-5 nodes (nearest by CVE text):
-1. node=n9949684  sim=-0.0000  cve=BIT-jenkins-2023-36478  severity=N/A
-   text: Eclipse Jetty provides a web server and servlet container. In versions 11.0.0 through 11.0.15, 10.0.0 through 10.0.15, and 9.0.0 through 9.4…
-
-'''
     

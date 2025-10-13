@@ -185,6 +185,11 @@ class TempCentricity:
         '''
         compute degree centrality for nodes in the temporal subgraph
         '''
+        # if self.search_scope == "auto" and self._coverage(t_s, t_e) >= self.global_cover:
+        #     return self._static_dc
+        
+        # nodes = self._nodes_in_window(t_s, t_e)
+
         H = self._extract_temporal_subgraph(t_s, t_e)
 
         # For DiGraph you can choose in/out/total:
@@ -197,7 +202,7 @@ class TempCentricity:
         else:
             return nx.degree_centrality(H)
         
-    @functools.lru_cache(maxsize=1024)
+    @functools.lru_cache(maxsize=8192)
     def eigenvector_centrality(self, t_s, t_e):
         '''
         compute eigenvector centrality for nodes in the temporal subgraph
@@ -209,9 +214,9 @@ class TempCentricity:
         else:
             return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
 
-    @functools.lru_cache(maxsize=1024)
+    @functools.lru_cache(maxsize=8192)
     def eigenvector_centrality_sparse(self, t_s, t_e, v0=None, max_iter=200, tol=1e-4):
-        H = self.__extract_temporal_subgraph(t_s, t_e)
+        H = self._extract_temporal_subgraph(t_s, t_e)
         # directed graph uses PageRank as the equalient
         if H.is_directed():
             pr = nx.pagerank(H)

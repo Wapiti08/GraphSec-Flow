@@ -303,10 +303,24 @@ class RootCauseAnalyzer:
 
         # 5) score communities
         print(f"time threshold: {t_s} ~ {t_e}, used scope: {used_scope}, ")
+
+        global_t_s = min(self.timestamps.values())
+        global_t_e = max(self.timestamps.values())
+
+        t_s_eff = t_s
+        t_e_eff = t_e
+
+
+        if used_scope not in ["window", "auto"] or t_s_eff is None or t_e_eff is None:
+            t_s_eff = global_t_s
+            t_e_eff = global_t_e
+
+        print(f"effective time threshold: {t_s_eff} ~ {t_e_eff} (used_scope={used_scope})")
+
         root_comm, cent_scores = self._detector.choose_root_community(
             comm_to_nodes=comm_res.comm_to_nodes,
-            t_s=t_s if used_scope in ["window", "auto"] else None,
-            t_e=t_e if used_scope in ["window", "auto"] else None,
+            t_s=t_s_eff,
+            t_e=t_e_eff,
         )
 
         if root_comm is None:
