@@ -18,7 +18,7 @@ import pickle
 from utils.util import _first_nonempty, _synth_text_from_dict, _median
 import argparse
 import time
-from search.sideeval import _hop_distance, _sim_from_dist
+from search.sideeval import _hop_distance, print_global_top_similar_pairs
 
 Scope = Literal["window", "global", "auto"]
 
@@ -93,7 +93,7 @@ class RootCauseAnalyzer:
                 span = max(1, tmax - tmin)
                 for n in candidates:
                     ts = self.timestamps.get(n)
-                    base = self.cve_scores.get(n, 0.0)
+                    base = self.node_cve_scores.get(n, 0.0)
                     if ts is not None:
                         early_bonus = 0.1 * (1.0 - (ts - tmin) / span)
                         node_score_override[n] = base + early_bonus
@@ -124,7 +124,7 @@ class RootCauseAnalyzer:
 
         '''
         def _comm_score(nodes: Iterable[int]) -> float:
-            cve_sum = sum(self.cve_scores.get(n, 0.0) for n in nodes)
+            cve_sum = sum(self.node_cve_scores.get(n, 0.0) for n in nodes)
             cent_sum = sum(cent_scores.get(n, 0.0) for n in nodes)
             min_ts = min(self.timestamps.get(n, float("inf")) for n in nodes)
             return w_cve * cve_sum + w_cent * cent_sum - w_early * min_ts
@@ -134,7 +134,7 @@ class RootCauseAnalyzer:
             for n in nodes:
                 ts = self.timestamps.get(n, float("inf"))
                 early = -float(ts) if (ts is not None) else 0.0
-                s = ( w_cve * self.cve_scores.get(n, 0.0)
+                s = ( w_cve * self.node_cve_scores.get(n, 0.0)
                      + w_cent * cent_scores.get(n, 0.0)
                      + w_early * early)
                 if s > best_s:
@@ -152,7 +152,7 @@ class RootCauseAnalyzer:
 
         def _key(n: int):
             # priopritize by CVE score, then timestamp, then centrality
-            cve_score = node_score_override.get(n, self.cve_scores.get(n, 0.0))
+            cve_score = node_score_override.get(n, self.node_cve_scores.get(n, 0.0))
             ts_key = -self.timestamps.get(n, float('inf'))  # earlier is better
             cent = cent_scores.get(n, 0.0)
             return (cve_score, ts_key, cent)
@@ -215,7 +215,7 @@ class RootCauseAnalyzer:
             t_e: Optional[float] = None,
             explain: bool=True,
             cve_score_lookup: Optional[Callable[[str],float]] = None, # cve_id -> score
-            return_diagnostics: bool=False,
+            return_diagnostics: bool=True,
             hop_mode: str="either",
             search_scope: Scope = "auto",
             **kwargs
@@ -244,6 +244,10 @@ class RootCauseAnalyzer:
         t1 = time.perf_counter()
         search_time_ms = (int((t1 - t0) * 1000))
 
+        # for global time range
+        global_t_s = min(self.timestamps.values())
+        global_t_e = max(self.timestamps.values())
+
         if explain and isinstance(res, tuple):
             neighbors, explanations = res
         else:
@@ -263,7 +267,7 @@ class RootCauseAnalyzer:
         # 3) scope-aware temporal subgraph
         def _extract_by_scope(scope: Scope):
             if scope == "global":
-                return self._detector.extract_temporal_subgraph(None, None, neighbors)
+                return self._detector.extract_temporal_subgraph(global_t_s, global_t_e, neighbors)
             return self._detector.extract_temporal_subgraph(t_s, t_e, neighbors)
         
         scopes_to_try = ["window"] if search_scope=="window" else \
@@ -273,8 +277,8 @@ class RootCauseAnalyzer:
         temp_subgraph = None
         used_scope: Scope = "window"
         for sc in scopes_to_try:
-            used_scope = sc  # type: ignore
-            temp_subgraph = _extract_by_scope(sc)  # type: ignore
+            used_scope = sc 
+            temp_subgraph = _extract_by_scope(sc)  
             if temp_subgraph is not None and temp_subgraph.number_of_nodes() > 0:
                 break
         
@@ -289,7 +293,6 @@ class RootCauseAnalyzer:
             return None, None
         
         # 4) communities
-
         comm_res = self._detector.detect_communities(temp_subgraph)
         if not comm_res.comm_to_nodes:
             if return_diagnostics:
@@ -304,12 +307,8 @@ class RootCauseAnalyzer:
         # 5) score communities
         print(f"time threshold: {t_s} ~ {t_e}, used scope: {used_scope}, ")
 
-        global_t_s = min(self.timestamps.values())
-        global_t_e = max(self.timestamps.values())
-
         t_s_eff = t_s
         t_e_eff = t_e
-
 
         if used_scope not in ["window", "auto"] or t_s_eff is None or t_e_eff is None:
             t_s_eff = global_t_s
@@ -378,7 +377,8 @@ class RootCauseAnalyzer:
                 except (TypeError, ValueError):
                     continue
                 d = -best_sim_negdist
-                sim_mapped = 1.0 / (1.0 + d)
+                epsilon = 1e-8
+                sim_mapped = 1.0 / (1.0 + d + epsilon)
                 sims.append(sim_mapped)
                 ngb_sims.append({
                     "node_id": nid,
@@ -410,6 +410,7 @@ def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, for
     per_cve_scores_path    = data_dir.joinpath("per_cve_scores.pkl")
     node_cve_scores_path   = data_dir.joinpath("node_cve_scores.pkl")
     node_texts_path        = data_dir.joinpath("nodeid_to_texts.pkl")
+    cve_meta_path          = data_dir.joinpath("cve_records_for_meta.pkl")
 
     with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
@@ -489,10 +490,19 @@ def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, for
         node_texts_path.write_bytes(pickle.dumps(nodeid_to_texts))
         print(f"[build] Saved nodeid_to_texts -> {node_texts_path}")
 
+    # ----------- CVE Record Meta -----------
+    if cve_meta_path.exists() and not force_rebuild:
+        cve_records = pickle.loads(cve_meta_path.read_bytes())
+        print(f"[cache] Loaded cve_meta from {cve_meta_path}")
+
     # ---------- downstream ----------
     ann = VamanaSearch()
     vamana = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
-
+    if cve_records:
+        vamana.build(cve_records = cve_records)
+    else:
+        vamana.build(cve_records=None)
+        
     analyzer = RootCauseAnalyzer(
         vamana=vamana,
         node_cve_scores=node_cve_scores,
@@ -514,17 +524,21 @@ def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, for
 
     print("Running RootCauseAnalyzer...")
 
-    root_comm, root_node = analyzer.analyze(
+    root_comm, root_node, diag_result = analyzer.analyze(
         query_vector=query_vec,
         k=k,
         t_s=t_s,
         t_e=t_e,
         explain=explain,
         cve_score_lookup=_cve_score_lookup,
+        return_diagnostics=diag,
     )
 
     if root_comm is None or root_node is None:
         print("No root cause detected in the given window.")
+        print(diag_result)
+        _ = print_global_top_similar_pairs(vamana, per_point_k=5, top_pairs=10)
+
     else:
         nd = depgraph.nodes[root_node]
         print(f"Root community: {root_comm}")
@@ -534,6 +548,7 @@ def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, for
             "cve_score": node_cve_scores[root_node],
             "timestamp": timestamps[root_node],
         })
+        
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run RootCauseAnalyzer on a query vector")

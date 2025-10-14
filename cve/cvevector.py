@@ -19,17 +19,23 @@ class CVEVector:
     
     '''
     def __init__(self,
-                 model_name_or_path: str = "sentence-transformers/all-mpnet-base-v2",
+                #  model_name_or_path: str = "sentence-transformers/all-mpnet-base-v2",
+                 model_name_or_path: str = "ehsanaghaei/SecureBERT",
                  normalize: bool = True,
                  device: Optional[str] = None,
                  batch_size: int = 32):
         try:
-            from sentence_transformers import SentenceTransformer
+            from sentence_transformers import SentenceTransformer, models
         except ImportError as e:
             raise ImportError("Please install sentence-transformers: pip install sentence-transformers") from e
 
-        self._SentenceTransformer = SentenceTransformer
-        self.model = SentenceTransformer(model_name_or_path, device=device)
+        word_emb = models.Transformer(model_name_or_path)
+        # 2) add mean pooling (CLS-free for RoBERTa)
+        pooling = models.Pooling(word_emb.get_word_embedding_dimension(), pooling_mode_mean_tokens=True)
+
+        # 3) build a SentenceTransformer pipeline
+        self.model = SentenceTransformer(modules=[word_emb, pooling], device=device)
+        # self.model = SentenceTransformer(model_name_or_path, device=device)
         self.normalize = normalize
         self.batch_size = batch_size
     

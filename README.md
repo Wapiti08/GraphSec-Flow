@@ -77,9 +77,15 @@ cd cve
 python3 graph_cve.py --dep_graph {your local path}/data/dep_graph.pkl --cve_json {your local path}/data/aggregated_data.json --nodes_pkl {your local path}/data/graph_nodes_edges.pkl --augment_graph {your local path}/data/dep_graph_cve.pkl
 ```
  
+- generate ground truth data
+```
+# under ground
+python3 gt_builder.py ----dep_graph /workspace/GraphSec-Flow/data/dep_graph.pkl --cve_meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl --out_root /workspace/GraphSec-Flow/data/root_causes.jsonl --out_paths /workspace/GraphSec-Flow/data/ref_paths.jsonl
+```
+
 - Root Cause Analysis
 ```
-python3 root_ana.py --cve_id "BIT-jenkins-2023-36478"
+python3 root_ana.py --cve_id "CVE-2017-5650"
 ```
 
 - Root Cause Path Analysis

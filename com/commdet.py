@@ -48,6 +48,13 @@ class TemporalCommDetector:
             - edges induced by the kept nodes from the original graph
         
         '''
+
+        # for debug 
+        print("whitelist size:", len(list(node_whitelist)))
+        print("min/max ts in map:", 
+            (min(self.timestamps.values()) if self.timestamps else None,
+            max(self.timestamps.values()) if self.timestamps else None))
+
         if t_s is None:
             t_s = float("-inf")
         if t_e is None:

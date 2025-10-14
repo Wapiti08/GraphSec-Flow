@@ -512,7 +512,7 @@ def main():
         if cid
     }
 
-    # define data path
+    # ------------ define data path -----------------
     data_dir = Path.cwd().parent.joinpath("data")
 
     cve_agg_data_dict_path = Path.cwd().parent.joinpath("data", "aggregated_data.json")
@@ -520,6 +520,7 @@ def main():
 
     node_cve_scores_path   = data_dir.joinpath("node_cve_scores.pkl")
     per_cve_scores_path    = data_dir.joinpath("per_cve_scores.pkl")
+    node_texts_path        = data_dir.joinpath("nodeid_to_texts.pkl")
 
     # ---------- prepare CVE scores -------------
     if per_cve_scores_path.exists():
@@ -558,36 +559,41 @@ def main():
     centrality = TempCentricity(depgraph, "auto")
     embedder = CVEVector()
 
-    nodeid_to_texts = {}
-    TEXT_KEYS = ["details", "summary", "description"]
+    # ---------- prepare node texts -------------
+    if node_texts_path.exists():
+        nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
+        print(f"[cache] Loaded nodeid_to_texts from {node_texts_path}")
+    else:
+        nodeid_to_texts: Dict[Any, List[str]] = {}
+        TEXT_KEYS = ["details", "summary", "description"]
 
-    for nid, attrs in depgraph.nodes(data=True):
-        raw_list = attrs.get("cve_list", []) or []
-        texts = []
-        for raw in raw_list:
-            cid = _normalize_cve_id(raw)
-            try:
-                rec = osv_cve_api(cid) or {}
-            except Exception as e:
-                rec = {"_error": str(e)}
-            
-            if "source" in rec:
-                rec = rec["data"]
+        for nid, attrs in depgraph.nodes(data=True):
+            raw_list = attrs.get("cve_list", []) or []
+            texts = []
+            for raw in raw_list:
+                cid = _normalize_cve_id(raw)
+                try:
+                    rec = osv_cve_api(cid) or {}
+                except Exception as e:
+                    rec = {"_error": str(e)}
+                
+                if "source" in rec:
+                    rec = rec["data"]
 
-            text = _first_nonempty(rec, TEXT_KEYS)
-            if not text and isinstance(raw, dict):
-                text = _synth_text_from_dict(cid, raw)
-            texts.append(text)
-        if texts:
-            nodeid_to_texts[nid] = texts
+                text = _first_nonempty(rec, TEXT_KEYS)
+                if not text and isinstance(raw, dict):
+                    text = _synth_text_from_dict(cid, raw)
+                texts.append(text)
+            if texts:
+                nodeid_to_texts[nid] = texts
 
-    if not nodeid_to_texts:
-        raise RuntimeError("No CVE texts found.")
+        if not nodeid_to_texts:
+            raise RuntimeError("No CVE texts found.")
     
+    # ---------- downstream ----------
+
     ann = VamanaSearch()
-
     vamana = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
-
     rcp = RootCausePathAnalyzer(
                             depgraph=graph_obj, 
                             vamana = vamana,
@@ -639,6 +645,7 @@ def main():
         root_comm, root_node = None, args.source
 
     else:
+        print("timestamp range:", args.t_start, args.t_end)
         # root-cause first, then paths
         result = rcp.analyze_with_paths(
             k_neighbors=int(args.rca_k),

@@ -13,22 +13,15 @@ Builds *inferred reference* root causes and propagation paths from:
 Outputs JSONL files: root_causes.jsonl and ref_paths.jsonl
 No third-party dependencies (standard library only).
 
-CLI:
-    python gt_builder.py \
-        --dep-graph dep_graph.json \
-        --osv osv.jsonl --nvd nvd.jsonl \
-        --maintainer maintainer.jsonl \
-        --out-root root_causes.jsonl \
-        --out-paths ref_paths.jsonl
-
  '''
-from __future__ import annotations
 
 import sys
 from pathlib import Path
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 
-from ground.helper import *
+from ground.helper import SemVer, VersionRange, smoke_dep_graph, smoke_nvd_jsonl, smoke_osv_jsonl
+from ground.helper import parse_date, iso, infer_pkg_ver_from_release
+from ground.helper import split_cve_meta_to_builder_inputs
 import argparse
 import json
 import re
@@ -36,8 +29,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Iterable, Set, Any
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from utils.util import read_jsonl, write_jsonl
-from ground.helper import smoke_dep_graph, smoke_nvd_jsonl, smoke_osv_jsonl, read_jsonl, split_cve_meta_to_builder_inputs
+from utils.util import read_jsonl, write_jsonl, _safe_load_pickle
 import time
 from cve.cvescore import _osv_extract_fix_commits
 # --------------------------------
@@ -284,7 +276,6 @@ class GTBuilder:
         w_agree = 0.8 * max(0.0, min(src_agreement, 1.0))
         return min(1.0, 0.2 + 0.5 * w_src + w_fix + w_agree)
 
-
     def build_root_causes(self) -> List[RootCause]:
         by_cve: Dict[str, Dict[str, Any]] = defaultdict(
             lambda: {
@@ -403,7 +394,7 @@ class GTBuilder:
         
         return refs
 
-def main():
+if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="Ground-truth-like reference constructor for vulnerability diffusion studies.")
     ap.add_argument("--dep-graph", required=True)
@@ -428,11 +419,11 @@ def main():
     else:
         if not args.dep_graph:
             ap.error("--dep-graph is required unless --smoke-test is used.")
-        g_obj = read_jsonl(args.dep_graph)
+        g_obj = _safe_load_pickle(Path(args.dep_graph))
 
         # If pre-cached meta is provided, split to OSV/NVD for the builder
         if args.cve_meta:
-            cve_meta = read_jsonl(args.cve_meta)
+            cve_meta = _safe_load_pickle(Path(args.cve_meta))
             osv_records, nvd_records = split_cve_meta_to_builder_inputs(cve_meta)
         else:
             osv_records, nvd_records = [], []

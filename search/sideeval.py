@@ -13,6 +13,7 @@ import json
 from typing import Iterable, Dict, List, Tuple, Optional, Any
 import numpy as np
 import networkx as nx
+import heapq
 
 def _sim_from_dist(d: float) -> float:
     # map Euclidean distance to a bounded similarity for readability
@@ -97,6 +98,8 @@ def top_similar_cve_pairs(vac, per_point_k: int = 5, top_pairs: int = 20) -> Lis
     pairs.sort(key=lambda x: x["similarity"], reverse=True)
     return pairs[:top_pairs]
 
+
+
 def print_top_similar_pairs(vac, per_point_k: int = 5, top_pairs: int = 10):
     rows = top_similar_cve_pairs(vac, per_point_k=per_point_k, top_pairs=top_pairs)
     print(f"\n[eval] Top {len(rows)} most similar CVE text pairs (by 1/(1+d)):")
@@ -107,6 +110,76 @@ def print_top_similar_pairs(vac, per_point_k: int = 5, top_pairs: int = 10):
             print(f"    A: {r['text_a_snip']}")
             print(f"    B: {r['text_b_snip']}")
 
+def global_top_similar_pairs(
+    vac, 
+    per_point_k: int = 5, # check how many neighbors per point
+    top_pairs: int = 10,  # report how many top pairs  
+    skip_same_node: bool = True, # skip pairs from the same node
+    ):
+    ''' return global top similar pairs, using cosine similarity 
+    
+    require vectors to be L2-normalized
+    '''
+    ann = vac.ann
+    data = ann.data
+    pid_to_pair = vac.pid_to_pair
+    nodeid_to_texts = vac.nodeid_to_texts
+
+    # min-heap saves (sim, a, b)
+    heap = []
+    seen = set()
+
+    num_points = len(data)
+    for a in range(num_points):
+        q = data[a]
+        cands = ann.search(q, k=per_point_k + 1)
+        for b in cands:
+            if b == a:
+                continue
+            u, v = (a, b) if a < b else (b, a)
+            if (u, v) in seen:
+                continue
+            if skip_same_node:
+                n_a, _ = pid_to_pair[u]
+                n_b, _ = pid_to_pair[v]
+                if n_a == n_b:
+                    continue
+            sim = float(np.dot(data[u], data[v]))
+            if len(heap) < top_pairs:
+                heapq.heappush(heap, (sim, u, v))
+                seen.add((u, v))
+            else:
+                if sim > heap[0][0]:
+                    # pop smallest, push new
+                    popped = heapq.heappushpop(heap, (sim, u, v))
+                    seen.add((u, v))
+    # print from largest to smallest
+    rows = []
+    for sim, u, v in sorted(heap, key=lambda x: x[0], reverse=True):
+        (node_a, cidx_a) = pid_to_pair[u]
+        (node_b, cidx_b) = pid_to_pair[v]
+        ta = nodeid_to_texts.get(node_a, [None])[cidx_a]
+        tb = nodeid_to_texts.get(node_b, [None])[cidx_b]
+        ta_snip = (ta[:200] + "…") if isinstance(ta, str) and len(ta) > 200 else ta
+        tb_snip = (tb[:200] + "…") if isinstance(tb, str) and len(tb) > 200 else tb
+        rows.append({
+            "similarity": sim,
+            "node_a": node_a, "cve_idx_a": cidx_a, "text_a_snip": ta_snip,
+            "node_b": node_b, "cve_idx_b": cidx_b, "text_b_snip": tb_snip,
+        })
+    return rows
+
+def print_global_top_similar_pairs(vac, per_point_k: int = 5, top_pairs: int = 10, skip_same_node: bool = True):
+    rows = global_top_similar_pairs(vac, per_point_k=per_point_k, top_pairs=top_pairs, skip_same_node=skip_same_node)
+    print(f"\n[eval] Top {len(rows)} most similar CVE text pairs (by cosine):")
+    for i, r in enumerate(rows, 1):
+        print(f"{i}. sim={r['similarity']:.4f}  "
+              f"A: node={r['node_a']} idx={r['cve_idx_a']} | B: node={r['node_b']} idx={r['cve_idx_b']}")
+        if r['text_a_snip'] and r['text_b_snip']:
+            print(f"    A: {r['text_a_snip']}")
+            print(f"    B: {r['text_b_snip']}")
+    
+    return rows
 
 def write_eval_report(path: str, **sections):
     try:

@@ -189,7 +189,7 @@ def smoke_nvd_jsonl() -> List[Dict[str, Any]]:
                                                                                                                                                                                                                                                                     ['Permissions Required', 'Third Party Advisory']}, {'url': 'https://vuldb.com/?id.239358', 'source': 'cna@vuldb.com', 'tags': ['Permissions Required', 'Third Party Advisory']}, {'url': 'https://vuldb.com/?submit.204279', 'source': 'cna@vuldb.com'}, {'url': 'https://github.com/cugerQDHJ/cve/blob/main/rce.md', 'source': 'af854a3a-2127-422b-91ae-364da2661108', 'tags': ['Exploit', 'Third Party Advisory']}, {'url': 'https://vuldb.com/?ctiid.239358', 'source': 'af854a3a-2127-422b-91ae-364da2661108', 'tags': ['Permissions Required', 'Third Party Advisory']}, {'url': 'https://vuldb.com/?id.239358', 'source': 'af854a3a-2127-422b-91ae-364da2661108', 'tags': ['Permissions Required', 'Third Party Advisory']}, 
                                                                                                                                                                                                                                                                     {'url': 'https://vuldb.com/?submit.204279', 'source': 'af854a3a-2127-422b-91ae-364da2661108'}]}}]}}]
 
-def split_cve_meta_to_builder_inputs(cve_meta: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+def split_cve_meta_to_builder_inputs(cve_meta: Dict[Any, List[Dict[str, Any]]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """
     Accepts pre-cached items like:
       {'source':'nvd','data':{...NVD v2 container...}}
@@ -201,7 +201,8 @@ def split_cve_meta_to_builder_inputs(cve_meta: List[Dict[str, Any]]) -> Tuple[Li
     osv_records: List[Dict[str, Any]] = []
     nvd_records: List[Dict[str, Any]] = []
 
-    for item in cve_meta or []:
+    for item in list(cve_meta.values()):
+        item = item[0]
         src = (item or {}).get("source")
         data = (item or {}).get("data") or {}
 

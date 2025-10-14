@@ -37,6 +37,7 @@ def read_jsonl(path: Optional[str]) -> List[Dict[str, Any]]:
             if not line:
                 continue
             rows.append(json.loads(line))
+            
     return rows
 
 def write_jsonl(path: str, rows: Iterable[Dict[str, Any]]) -> None:

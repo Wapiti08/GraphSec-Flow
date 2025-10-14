@@ -20,7 +20,7 @@ import heapq
 from collections import defaultdict
 import time
 import pickle
-from search.sideeval import eval_node_self_recall, print_top_similar_pairs, write_eval_report
+from search.sideeval import eval_node_self_recall, print_global_top_similar_pairs, global_top_similar_pairs, write_eval_report
 from utils.util import _first_nonempty, _synth_text_from_dict
 
 
@@ -32,7 +32,7 @@ class VamanaSearch:
         graph: adjacency list mapping node indicies to list of neighbor indices
         entry_point: the entrypoint of graph
     """
-    def __init__(self, M=32, ef_construction=200, ef_search=128):
+    def __init__(self, M=64, ef_construction=200, ef_search=256):
         '''
         args:
             m: max number of neighbors per node
@@ -49,13 +49,7 @@ class VamanaSearch:
         ''' compute distance between two vectors a and b
         
         '''
-        # test wtih euclidean distance
-        # return np.linalg.norm(a - b)
-
-        # test wtih cosine distance
-        a = a / (np.linalg.norm(a) + 1e-12)
-        b = b / (np.linalg.norm(b) + 1e-12)
-
+        # assume a has been normalized outside and b too
         return 1.0 - float(np.dot(a, b))
 
     def _select_neighbors(self, candidates, M):
@@ -79,7 +73,7 @@ class VamanaSearch:
                 break  
         return [idx for _, idx in selected]
 
-    def search(self, query, k=10):
+    def search(self, query, k=10, ef_override=None):
         ''' approximate K-NN search for a query vector
         
         1. Start at entry_point
@@ -111,7 +105,7 @@ class VamanaSearch:
         heap = [(curr_dist, current)]
         topk = [] # will store (-dist, idx) for max-heap
 
-        ef = max(self.ef_search, k)  # ensure ef is at least k
+        ef = max(ef_override if ef_override is not None else self.ef_search, k)
 
         while heap and len(visited) < ef:
             dist_top, idx_top = heapq.heappop(heap)
@@ -132,6 +126,7 @@ class VamanaSearch:
         if not result:
             result = [current]
         return result
+    
 
     def add_point(self, vector):
         ''' insert a new vector into the graph
@@ -151,7 +146,7 @@ class VamanaSearch:
             return idx
         
         # 1. Search for candidates using a best-first search
-        candidates = self.search(vector, k = self.ef_construction)
+        candidates = self.search(vector, k=self.ef_construction, ef_override=self.ef_construction)
         # build list of (distance, idx)
         dist_candidates = [(self._distance(vector, self.data[i]), i) for i in candidates]
         # 2. Prune candidates to M best neighbors
@@ -213,7 +208,7 @@ class VamanaOnCVE:
     def _agg_node_scores(
             self,
             raw_hits: List[Tuple[int, float]],
-            agg: str="mean"
+            agg: str="max"
         ):
         per_node = defaultdict(list)
         for pid, sim in raw_hits:
@@ -243,14 +238,14 @@ class VamanaOnCVE:
                query_vec, 
                k = 10,
                M: Optional[int] = None,
-               agg: str = "mean",
-               return_explanations: bool=False):
+               agg: str = "max",
+               return_explanations: bool=True):
         '''
         input: query_vec (np.na)
         output: k dependent graph node_id (plus optional explanations)
         '''
         # choose enough candidates from node-level
-        M = M or max(50, k*5)
+        M = M or max(300, k*50)
 
         # VamanaSearch.search returns a list of point_ids only, so compute sims here
         candidate_pids = self.ann.search(query_vec, k=M) # -> [([point_id, similarity])]
@@ -281,7 +276,7 @@ class VamanaOnCVE:
                 "best_timestamp_ms": meta.get("timestamp"),
                 "best_text": self.nodeid_to_texts.get(node_id, [None])[cidx] if node_id in self.nodeid_to_texts else None,
             }
-
+        print("search explanations:", explanations)
         return neighbors, explanations
 
 def _append_meta_from_raw(metas: List[Dict[str, Any]], rec: Dict[str, Any]) -> None:
@@ -415,7 +410,22 @@ def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
 
             texts.append(text)
             _append_meta_from_raw(metas, rec)
-        
+
+        # remove duplicates while preserving order
+        if texts:
+            seen = set()
+            uniq_texts = []
+            uniq_metas = []
+            for t, m in zip(texts, metas):
+                key = t.strip()
+                if key in seen:
+                    continue
+                seen.add(key)
+                uniq_texts.append(t)
+                uniq_metas.append(m)
+            texts = uniq_texts
+            metas = uniq_metas
+
         if texts:
             nodeid_to_texts[nid] = texts
             cve_records_for_meta[nid] = metas
@@ -443,8 +453,10 @@ def _load_or_build_texts_and_meta(depgraph, force_rebuild=False):
 if __name__ =="__main__":
 
     # load dependency graph with cve info
-    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
-
+    data_dir = Path.cwd().parent.joinpath("data")
+    cve_depdata_path       = data_dir.joinpath("dep_graph_cve.pkl")
+    cve_meta_path          = data_dir.joinpath("cve_records_for_meta.pkl")
+    
     with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
     assert isinstance(depgraph, nx.Graph), "dep_graph_cve.pkl should contain a networkx.Graph or {'graph': nx.Graph}"
@@ -454,8 +466,14 @@ if __name__ =="__main__":
 
     # ---------- build embedder -----------
     embedder = CVEVector()
+
+    if cve_meta_path.exists():
+        cve_records = pickle.loads(cve_meta_path.read_bytes())
+        print(f"[cache] Loaded cve_meta from {cve_meta_path}")
+
     ann = VamanaSearch()
     vac = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
+    # initialize entry point
     vac.build(cve_records=cve_records_for_meta)
 
     # quick coverage from your build phase
@@ -465,20 +483,33 @@ if __name__ =="__main__":
     }
 
     # 1) Quantitative reliability
-    metrics = eval_node_self_recall(vac, k=5, sample_size=200)
+    # metrics = eval_node_self_recall(vac, k=5, sample_size=200)
+    metrics = eval_node_self_recall(vac, k=5, sample_size=1000)
 
     # 2) Qualitative evidence 
-    print_top_similar_pairs(vac, per_point_k=5, top_pairs=10)
- 
+    # rows = print_global_top_similar_pairs(vac, per_point_k=5, top_pairs=10, skip_same_node=True)
+    # metrics["global_top_pairs"] = [
+    #     {
+    #         "sim": round(r["similarity"], 6),
+    #         "node_a": r["node_a"], "cve_idx_a": r["cve_idx_a"],
+    #         "node_b": r["node_b"], "cve_idx_b": r["cve_idx_b"],
+    #         "text_a_snip": r["text_a_snip"],
+    #         "text_b_snip": r["text_b_snip"],
+    #     }
+    #     for r in rows
+    # ]
+
+    report_name = f"vamana_M{vac.ann.M}_efc{vac.ann.ef_construction}_efs{getattr(vac.ann,'ef_search',0)}_{getattr(vac.embedder,'model_name','unknown')}.json"
+
     # 3) Persist a small JSON report for reproducibility
     write_eval_report(
-        "vamana_eval_report.json",
+        report_name,
         coverage=coverage,
         metrics=metrics,
         params={
             "M": vac.ann.M,
             "ef_construction": vac.ann.ef_construction,
-            "agg": "mean",
+            "agg": "max",
             # euclidean distance d is converted to similarity as 1/(1+d)
             # "similarity": "1/(1+euclidean)"
             # cosine distance d is converted to similarity as 1-d
@@ -497,7 +528,7 @@ if __name__ =="__main__":
 
     # ------------ run search and print results ------------
     start = time.time()
-    neighbors, explanations = vac.search(query_vec, k=5, agg="mean", return_explanations=True)
+    neighbors, explanations = vac.search(query_vec, k=5, agg="max", return_explanations=True)
     ms = (time.time() - start) * 1000.0
 
     print("\n Top-5 nodes (nearest by CVE text):")
