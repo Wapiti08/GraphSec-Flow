@@ -416,6 +416,8 @@ if __name__ == "__main__":
         g_obj = smoke_dep_graph()
         osv = smoke_osv_jsonl()
         nvd = smoke_nvd_jsonl()
+        G = DepGraph.from_json(g_obj)
+
     else:
         if not args.dep_graph:
             ap.error("--dep-graph is required unless --smoke-test is used.")
@@ -427,8 +429,6 @@ if __name__ == "__main__":
             osv_records, nvd_records = split_cve_meta_to_builder_inputs(cve_meta)
         else:
             osv_records, nvd_records = [], []
-
-    G = DepGraph.from_json(g_obj)
 
     # ---- Build roots & paths -------
     builder = GTBuilder(
