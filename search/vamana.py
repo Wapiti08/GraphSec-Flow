@@ -13,6 +13,7 @@ import networkx as nx
 from cve import cveinfo
 from cve.cveinfo import osv_cve_api
 from cve.cvescore import _normalize_cve_id,_nvd_pick_cvss_v31, _nvd_extract_references, _nvd_infer_packages_from_cpe
+from cve.cvescore import _to_builder_payload_from_nvd_container
 from cve.cvescore import _osv_pick_cvss_v3, _osv_extract_references, _osv_infer_packages, _osv_extract_fix_commits
 from typing import Dict, List, Tuple, Optional, Any
 import math
@@ -292,6 +293,9 @@ def _append_meta_from_raw(metas: List[Dict[str, Any]], rec: Dict[str, Any]) -> N
     data = rec.get("data") if isinstance(rec.get("data"), dict) else None
 
     if src == "nvd" and isinstance(data, dict):
+        # prepare a compact NVD container for ground truth
+        builder_payload = _to_builder_payload_from_nvd_container(data)
+
         for it in (data.get("vulnerabilities") or []):
             cve = it.get("cve") or {}
             cid = cve.get("id")
@@ -306,7 +310,8 @@ def _append_meta_from_raw(metas: List[Dict[str, Any]], rec: Dict[str, Any]) -> N
                 },
                 "references": _nvd_extract_references(cve),
                 "packages": _nvd_infer_packages_from_cpe(cve),
-                "source": "NVD",
+                "builder_payload": builder_payload,
+                "source": "nvd",
             })
         return
     
@@ -325,7 +330,8 @@ def _append_meta_from_raw(metas: List[Dict[str, Any]], rec: Dict[str, Any]) -> N
             "references": _osv_extract_references(osv_data),
             "packages": _osv_infer_packages(osv_data),
             "fix_commits": _osv_extract_fix_commits(osv_data),
-            "source": "OSV",
+            "builder_payload": osv_data,
+            "source": "osv",
         })
         return
     return

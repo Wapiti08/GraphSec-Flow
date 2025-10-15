@@ -201,40 +201,56 @@ def split_cve_meta_to_builder_inputs(cve_meta: Dict[Any, List[Dict[str, Any]]]) 
     osv_records: List[Dict[str, Any]] = []
     nvd_records: List[Dict[str, Any]] = []
 
-    for item in list(cve_meta.values()):
-        item = item[0]
-        src = (item or {}).get("source")
-        data = (item or {}).get("data") or {}
+    for metas in cve_meta.values():
+        if not isinstance(metas, list):
+            continue
+        for item in metas:
+            if not isinstance(item, dict):
+                continue
+
+        src = (item.get("source") or "").lower()
+
+        payload = item.get("builder_payload")
+        if payload is None:
+            payload = item.get("data")
+        if not isinstance(payload, dict):
+            payload = {}
 
         if src == "osv":
             # data is an OSV record; keep as-is so builder can read affected[].versions/ranges.events
-            osv_records.append(data)
+            osv_records.append(payload)
 
         elif src == "nvd":
             # NVD v2 container → expand to individual CVEs as lightweight dicts
-            for it in (data.get("vulnerabilities") or []):
-                cve = it.get("cve") or {}
-                # Minimal shape the builder can ingest (mainly for evidence; ranges likely absent)
-                nvd_records.append({
-                    "cve_id": cve.get("id"),
-                    "published": cve.get("published"),
-                    "lastModified": cve.get("lastModified"),
-                    # Best-effort package inference via CPE → vendor:product
-                    "packages": _nvd_infer_packages_from_cpe(cve),
-                    # If you have a mapping layer vendor:product -> graph package names, apply it here.
-                    # "package": mapped_pkg,
-                    # Optionally carry references/severity for evidence (builder ignores them for matching)
-                    "references": _nvd_extract_references(cve),
-                    "metrics": cve.get("metrics"),
-                    "source": "NVD"
-                })
+            container = payload if payload.get("vulnerabilities") else {}
+            if container:
+                for it in (container.get("vulnerabilities") or []):
+                    cve = (it.get("cve") or {})
+                    nvd_records.append({
+                        "cve_id": cve.get("id"),
+                        "published": cve.get("published"),
+                        "lastModified": cve.get("lastModified"),
+                        "packages": _nvd_infer_packages_from_cpe(cve),
+                        "references": _nvd_extract_references(cve),
+                        "metrics": cve.get("metrics"),
+                        "source": "NVD",
+                    })
         else:
             # Fallback detection if 'source' is missing but structure is recognizable
-            if data.get("vulnerabilities"):  # looks like NVD v2
+            data = payload
+            if isinstance(data, dict) and data.get("vulnerabilities"):  # NVD v2 container
                 for it in (data.get("vulnerabilities") or []):
-                    cve = it.get("cve") or {}
-                    nvd_records.append({"cve_id": cve.get("id"), "published": cve.get("published")})
-            elif data.get("id"):  # looks like an OSV record
+                    cve = (it.get("cve") or {})
+                    nvd_records.append({
+                        "cve_id": cve.get("id"),
+                        "published": cve.get("published"),
+                        "lastModified": cve.get("lastModified"),
+                        "packages": _nvd_infer_packages_from_cpe(cve),
+                        "references": _nvd_extract_references(cve),
+                        "metrics": cve.get("metrics"),
+                        "source": "NVD",
+                    })
+            elif isinstance(data, dict) and (data.get("id") or data.get("affected") or data.get("references")):  # OSV-like
                 osv_records.append(data)
 
     return osv_records, nvd_records

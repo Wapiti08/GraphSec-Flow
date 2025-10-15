@@ -419,7 +419,7 @@ if __name__ == "__main__":
     else:
         if not args.dep_graph:
             ap.error("--dep-graph is required unless --smoke-test is used.")
-        g_obj = _safe_load_pickle(Path(args.dep_graph))
+        G = _safe_load_pickle(Path(args.dep_graph))
 
         # If pre-cached meta is provided, split to OSV/NVD for the builder
         if args.cve_meta:

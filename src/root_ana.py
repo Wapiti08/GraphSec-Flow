@@ -290,7 +290,7 @@ class RootCauseAnalyzer:
                     "scope_tried": scopes_to_try,
                     "window": {"t_s": t_s, "t_e": t_e},
                 }
-            return None, None
+            return None, None, None
         
         # 4) communities
         comm_res = self._detector.detect_communities(temp_subgraph)
@@ -302,7 +302,7 @@ class RootCauseAnalyzer:
                     "used_scope": used_scope,
                 }
             
-            return None, None
+            return None, None, None
 
         # 5) score communities
         print(f"time threshold: {t_s} ~ {t_e}, used scope: {used_scope}, ")
@@ -329,7 +329,7 @@ class RootCauseAnalyzer:
                         "reason": "no_root_comm",
                         "used_scope": used_scope,
                     }
-                return None, None
+                return None, None, None
 
         # 6) pick root node (global-aware tie-break optional)
         rank_key = self._node_rank_key(cent_scores)
@@ -347,7 +347,7 @@ class RootCauseAnalyzer:
         root_node = max(cand_nodes, key=global_aware_key)
 
         if not return_diagnostics:
-            return root_comm, root_node
+            return root_comm, root_node, None
 
         # ---- build reliable diagnostics ----
         
@@ -544,7 +544,7 @@ def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, for
         print(f"Root community: {root_comm}")
         print(f"Root node: {root_node}")
         print({
-            "cve_id": nd.get("cve_id"),
+            "cve_list": nd.get("cve_list"),
             "cve_score": node_cve_scores[root_node],
             "timestamp": timestamps[root_node],
         })

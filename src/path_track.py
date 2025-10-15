@@ -388,7 +388,7 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
         records: list of path summaries
         '''
         # 1) root cause
-        root_comm, root_node = self.analyze(
+        root_comm, root_node, _ = self.analyze(
                                     query_vector=getattr(self, "query_vector", None),
                                     k=int(k_neighbors), 
                                     t_start=t_start, t_end=t_end, 

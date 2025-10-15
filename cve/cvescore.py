@@ -14,9 +14,11 @@ from typing import Dict, Any, Iterable, Optional, Tuple, List, Set
 from cve.cveinfo import osv_cve_api
 
 def _nvd_pick_cvss_v31(cve_obj: Dict[str, Any]) -> Tuple[Optional[float], Optional[str], Optional[str]]:
-    """
+    """ tailored processing for NVD CVE JSON structure.
+
     Return (base_score, vector, source) for NVD CVSS v3.1, preferring Primary (nvd@nist.gov).
     """
+
     metrics = ((cve_obj.get("metrics") or {}).get("cvssMetricV31") or [])
     if not metrics:
         return None, None, None
@@ -36,6 +38,26 @@ def _nvd_pick_cvss_v31(cve_obj: Dict[str, Any]) -> Tuple[Optional[float], Option
 
 def _nvd_extract_references(cve_obj: Dict[str, Any]) -> List[str]:
     return [r.get("url") for r in (cve_obj.get("references") or []) if r.get("url")]
+
+
+def _to_builder_payload_from_nvd_container(nvd_container: dict) -> dict:
+    # Keep only what gt_builder and helper funcs need.
+    # Include configurations because _nvd_infer_packages_from_cpe depends on it.
+    out = {"vulnerabilities": []}
+    for it in (nvd_container.get("vulnerabilities") or []):
+        cve = it.get("cve") or {}
+        out["vulnerabilities"].append({
+            "cve": {
+                "id": cve.get("id"),
+                "published": cve.get("published"),
+                "lastModified": cve.get("lastModified"),
+                "metrics": cve.get("metrics"),               # for CVSS if needed
+                "references": cve.get("references"),         # builder uses _nvd_extract_references
+                "configurations": cve.get("configurations"), # for CPE → packages inference
+            }
+        })
+    return out
+
 
 def _nvd_infer_packages_from_cpe(cve_obj: Dict[str, Any]) -> List[str]:
     """

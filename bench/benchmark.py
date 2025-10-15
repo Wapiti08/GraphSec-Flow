@@ -477,11 +477,6 @@ if __name__ == "__main__":
     # --------- Run Benchmarks ---------
     all_metrics = {}
 
-    # centrality
-    cen = benchmark_centrality(tempcent, events, window_iter)
-    all_metrics.update(cen)
-    print("[info] Centrality benchmark done")
-    
     # community 
     if node_cve_scores is None:
         node_cve_scores = {n: 0.0 for n in depgraph.nodes()}
@@ -489,11 +484,21 @@ if __name__ == "__main__":
     
     comm = benchmark_community(depgraph, tempcent, node_cve_scores, events, window_iter)
     all_metrics.update(comm)
+    print("[info] Community benchmark done")
+    print("current metrics:", all_metrics)
+
+    # centrality
+    cen = benchmark_centrality(tempcent, events, window_iter)
+    all_metrics.update(cen)
+    print("[info] Centrality benchmark done")
+    print("current metrics:", all_metrics)
 
     # path & full
     pathm = benchmark_paths(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
                             k_neighbors=15, alpha=1.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False)
     all_metrics.update(pathm)
+    print("[info] Path benchmark done")
+    print("current metrics:", all_metrics)
 
     fullm = benchmark_full(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
                            k_neighbors=15, alpha=1.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, fuse_lambda=0.6)
