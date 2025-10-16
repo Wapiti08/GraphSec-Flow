@@ -80,7 +80,7 @@ python3 graph_cve.py --dep_graph {your local path}/data/dep_graph.pkl --cve_json
 - generate ground truth data
 ```
 # under ground
-python3 gt_builder.py ----dep_graph /workspace/GraphSec-Flow/data/dep_graph.pkl --cve_meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl --out_root /workspace/GraphSec-Flow/data/root_causes.jsonl --out_paths /workspace/GraphSec-Flow/data/ref_paths.jsonl
+python3 gt_builder.py --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl --cve-meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl --out-root /workspace/GraphSec-Flow/data/root_causes.jsonl --out-paths /workspace/GraphSec-Flow/data/ref_paths.jsonl
 ```
 
 - Root Cause Analysis

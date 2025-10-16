@@ -21,7 +21,8 @@ sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 
 from ground.helper import SemVer, VersionRange, smoke_dep_graph, smoke_nvd_jsonl, smoke_osv_jsonl
 from ground.helper import parse_date, iso, infer_pkg_ver_from_release
-from ground.helper import split_cve_meta_to_builder_inputs
+from ground.helper import split_cve_meta_to_builder_inputs, _extract_cve_id, _unwrap_record
+from ground.helper import _extract_coordinates_from_osv_pkg
 import argparse
 import json
 import re
@@ -201,23 +202,34 @@ class GTBuilder:
         versions: Set[str] = set()
         for af in record.get("affected", []) or []:
             for v in af.get("versions", []) or []:
-                sv = SemVer.parse(str(v))
-                if sv:
-                    versions.add(str(sv))
+                sv = SemVer.parse(str(v)) or None
+                versions.add(str(sv) if sv else str(v))        
         return versions
     
     @staticmethod
     def _collect_ranges(record: Dict[str, Any]) -> List[VersionRange]:
         ranges: List[VersionRange] = []
-        for key in ("introduced", "affected", "fixed"):
-            vals = record.get(key) or []
-            if isinstance(vals, str):
-                vals = [vals]
-            for expr in vals:
-                try:
-                    ranges.append(VersionRange.parse(str(expr)))
-                except Exception:
-                    continue
+        for af in record.get("affected", []) or []:
+            for rng in af.get("ranges", []) or []:
+                evs = rng.get("events", []) or []
+                introduced = [e.get("introduced") for e in evs if e.get("introduced") not in (None, "")]
+                fixed      = [e.get("fixed")      for e in evs if e.get("fixed") not in (None, "")]
+                cur_intro = None
+                for e in evs:
+                    if "introduced" in e and e["introduced"] not in (None, ""):
+                        cur_intro = e["introduced"]
+                    elif "fixed" in e and e["fixed"] not in (None, "") and cur_intro is not None:
+                        try:
+                            ranges.append(VersionRange.parse(f">={cur_intro},<{e['fixed']}"))
+                        except Exception:
+                            pass
+                        cur_intro = None
+                if cur_intro:
+                    try:
+                        ranges.append(VersionRange.parse(f">={cur_intro}"))
+                    except Exception:
+                        pass
+
         return ranges
 
 
@@ -239,8 +251,38 @@ class GTBuilder:
         commits.update(_osv_extract_fix_commits(record))
         return list(commits)
 
-    def _candidate_nodes_for_package(self, package: str) -> List[Node]:
-        return [n for n in self.g.nodes.values() if n.package == package]
+    def _candidate_nodes_for_package(self, record: Dict[str, Any]) -> List[Node]:
+        ''' extract package from OSV records to match dep_graph.release
+        
+        '''
+        pkgname = self._package(record)
+        candidates: List[Node] = []
+        coords = None
+        for af in record.get("affected", []) or []:
+            coords = self._extract_coordinates_from_osv_pkg(af.get("package") or {})
+            if coords.get("group") or coords.get("artifact"):
+                break
+        
+        for n in self.g.nodes.values():
+            parts = n.release.split(":")
+            g = parts[0] if len(parts) >= 3 else None
+            a = parts[1] if len(parts) >= 3 else None
+            # strong match by coords
+            strong_ok = False
+            if coords and coords["artifact"]:
+                if a == coords["artifact"] and (not coords["group"] or g == coords["group"]):
+                    strong_ok = True
+            
+            # weak match by package name
+            weak_ok = False
+            if not strong_ok:
+                simple = (coords["artifact"] or pkgname or "").lower()
+                if simple:
+                    weak_ok = re.search(rf"(^|[:/.-]){re.escape(simple)}($|[:/.-])", n.release.lower()) is not None
+
+            if strong_ok or weak_ok:
+                candidates.append(n)
+        return candidates
 
     def _match_nodes_by_versions_or_ranges(self, nodes: List[Node], versions_set: Optional[Set[str]], ranges: List[VersionRange]) -> List[Node]:
         if versions_set:
@@ -286,12 +328,14 @@ class GTBuilder:
 
         def ingest(records: List[Dict[str, Any]], source: str):
             for r in records:
-                cve = r.get("cve_id") or r.get("id")
+                # unwrap record
+                r = _unwrap_record(r)
+                cve = _extract_cve_id(r) or r.get("id")
                 if not cve:
                     continue
                 pkg = self._package(r)
                 versions_set: Set[str] = set()
-                if source == "OSV":
+                if source == "osv":
                     versions_set = self._osv_extract_versions(r)
                     if not pkg:
                         pkg = self._osv_infer_package(r)
@@ -299,20 +343,20 @@ class GTBuilder:
                     continue
                 
                 ranges = self._collect_ranges(r)
-                candidates = self._match_nodes_by_versions_or_ranges(self._candidate_nodes_for_package(pkg), versions_set or None, ranges)
+                candidates = self._match_nodes_by_versions_or_ranges(self._candidate_nodes_for_package(r), versions_set or None, ranges)
                 bucket = by_cve[cve]["packages"][pkg]
                 bucket["nodes"].extend(candidates)
                 bucket["sources"].add(source)
                 bucket["fix_commits"].update(self._fix_commits(r))
 
                 ev_fields = {"published": r.get("published")}
-                if source == "OSV":
+                if source == "osv":
                     has_git = any((rng.get("type") == "GIT") for af in (r.get("affected") or []) for rng in (af.get("ranges") or []))
                     ev_fields.update({"versions_count": len(versions_set), "has_git_ranges": has_git})
                 bucket["evidence"].append(EvidenceItem(source=source, fields=ev_fields))
 
-        ingest(self.osv, "OSV")
-        ingest(self.nvd, "NVD")
+        ingest(self.osv, "osv")
+        ingest(self.nvd, "nvd")
 
         roots: List[RootCause] = []
         for cve, group in by_cve.items():
@@ -389,7 +433,7 @@ class GTBuilder:
             depth_factor = 1.0 if not edges_accum else max(0.3, 1.0 - 0.05 * len(edges_accum))
             conf = max(0.0, min(1.0, root.confidence * depth_factor))
 
-            ev = [EvidenceItem(source="OSV"), EvidenceItem(source="NVD")]
+            ev = [EvidenceItem(source="osv"), EvidenceItem(source="nvd")]
             refs.append(ReferencePath(cve_id=root.cve_id, root_id=rid, path=edges_accum, evidence=ev, confidence=conf))
         
         return refs
@@ -423,7 +467,7 @@ if __name__ == "__main__":
             ap.error("--dep-graph is required unless --smoke-test is used.")
         G = _safe_load_pickle(Path(args.dep_graph))
 
-        # If pre-cached meta is provided, split to OSV/NVD for the builder
+        # If pre-cached meta is provided, split to OSV/nü d for the builder
         if args.cve_meta:
             cve_meta = _safe_load_pickle(Path(args.cve_meta))
             osv_records, nvd_records = split_cve_meta_to_builder_inputs(cve_meta)

@@ -11,6 +11,54 @@ from cve.cvescore import _nvd_infer_packages_from_cpe, _nvd_extract_references
 
 ISO_FMT = "%Y-%m-%d"
 
+CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}")
+
+def _unwrap_record(self, r: Dict[str, Any]) -> Dict[str, Any]:
+    if "data" in r and isinstance(r["data"], dict):
+        return r["data"]
+    if "builder_payload" in r and isinstance(r["builder_payload"], dict):
+        return r["builder_payload"]
+    return r
+
+def _extract_cve_id(self, r: Dict[str, Any]) -> Optional[str]:
+    # prioritize standard keys in data.aliases
+    for k in ["cve_id", "cve", "id"]:
+        v = r.get(k)
+        if isinstance(v, str) and CVE_RE.match(v):
+            return v
+    for k in ("aliases",):
+        vals = r.get(k) or []
+        for v in vals:
+            if isinstance(v, str) and CVE_RE.fullmatch(v):
+                return v
+    return None
+
+def _extract_coordinates_from_osv_pkg(pkg_obj: Dict[str, Any]) -> Dict[str, Optional[str]]:
+    ''' check ecosystem first and then filter with version and ranges
+    
+    '''
+    name = (pkg_obj or {}).get("name") or ""
+    eco = (pkg_obj or {}).get("ecosystem") or ""
+    purl = (pkg_obj or {}).get("purl") or ""
+    group = artifact = None
+
+    if eco.lower() == "marven":
+        if ":" in name:
+            group, artifact = name.split(":", 1)
+    if purl and "pkg:marven/" in purl:
+        try:
+            body = purl.split("pkg:marven/", 1)[1]
+            gav = body.split("@",1)[0]
+            parts = gav.split("/")
+            if len(parts) >= 2:
+                group, artifact = parts[0], parts[1]
+        except Exception:
+            pass
+    if not artifact and name:
+        artifact = name.split("/")[-1]
+    return {"group": group, "artifact": artifact}
+
+
 def parse_date(s: Optional[str]) -> Optional[datetime]:
     if not s:
         return None
