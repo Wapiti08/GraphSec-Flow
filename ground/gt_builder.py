@@ -23,6 +23,7 @@ from ground.helper import SemVer, VersionRange, smoke_dep_graph, smoke_nvd_jsonl
 from ground.helper import parse_date, iso, infer_pkg_ver_from_release
 from ground.helper import split_cve_meta_to_builder_inputs, _extract_cve_id, _unwrap_record
 from ground.helper import _extract_coordinates_from_osv_pkg
+from ground.helper import _get_release,_get_version,_get_time,_node_key
 import argparse
 import json
 import re
@@ -255,16 +256,21 @@ class GTBuilder:
         ''' extract package from OSV records to match dep_graph.release
         
         '''
-        pkgname = self._package(record)
+        if isinstance(record, dict):
+            pkgname = self._package(record) or ""
+        else:
+            pkgname = str(record)
+
         candidates: List[Node] = []
         coords = None
         for af in record.get("affected", []) or []:
-            coords = self._extract_coordinates_from_osv_pkg(af.get("package") or {})
+            coords = _extract_coordinates_from_osv_pkg(af.get("package") or {})
             if coords.get("group") or coords.get("artifact"):
                 break
         
         for n in self.g.nodes.values():
-            parts = n.release.split(":")
+            release = _get_release(n)
+            parts = release.split(":")
             g = parts[0] if len(parts) >= 3 else None
             a = parts[1] if len(parts) >= 3 else None
             # strong match by coords
@@ -278,10 +284,11 @@ class GTBuilder:
             if not strong_ok:
                 simple = (coords["artifact"] or pkgname or "").lower()
                 if simple:
-                    weak_ok = re.search(rf"(^|[:/.-]){re.escape(simple)}($|[:/.-])", n.release.lower()) is not None
+                    weak_ok = re.search(rf"(^|[:/.-]){re.escape(simple)}($|[:/.-])", release.lower()) is not None
 
             if strong_ok or weak_ok:
                 candidates.append(n)
+
         return candidates
 
     def _match_nodes_by_versions_or_ranges(self, nodes: List[Node], versions_set: Optional[Set[str]], ranges: List[VersionRange]) -> List[Node]:
@@ -289,7 +296,7 @@ class GTBuilder:
             vers = set(versions_set)
             matched = []
             for n in nodes:
-                sv = SemVer.parse(n.version)
+                sv = SemVer.parse(_get_version(n))
                 if sv and str(sv) in vers:
                     matched.append(n)
             if matched:
@@ -298,7 +305,7 @@ class GTBuilder:
             return nodes
         matched = []
         for n in nodes:
-            sv = SemVer.parse(n.version)
+            sv = SemVer.parse(_get_version(n))
             if not sv:
                 continue
             if any(r.contains(sv) for r in ranges):
@@ -309,7 +316,7 @@ class GTBuilder:
     def _earliest_node(self, nodes: List[Node]) -> Optional[Node]:
         if not nodes:
             return None
-        nodes_sorted = sorted(nodes, key=lambda x: (x.time or datetime.max, SemVer.parse(x.version) or SemVer(9999, 9999, 9999)))
+        nodes_sorted = sorted(nodes, key=lambda x: (_get_time(x) or datetime.max, SemVer.parse(_get_version(x)) or SemVer(9999, 9999, 9999)))
         return nodes_sorted[0]
     
     def _confidence_root(self, sources: Set[str], has_fix_commit: bool, src_agreement: float) -> float:
@@ -361,8 +368,11 @@ class GTBuilder:
         roots: List[RootCause] = []
         for cve, group in by_cve.items():
             for pkg, item in group["packages"].items():
-                nodes_unique: Dict[str, Node] = {n.id: n for n in item["nodes"]}
+                nodes_unique = {}
+                for n in item["nodes"]:
+                    nodes_unique[_node_key(n)] = n
                 nodes = list(nodes_unique.values())
+
                 earliest = self._earliest_node(nodes)
 
                 time_introduced = iso(earliest.time) if earliest else None

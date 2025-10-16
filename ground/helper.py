@@ -3,7 +3,7 @@ from pathlib import Path
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Iterable, Set, Any
 from collections import defaultdict, deque
 import re
@@ -13,14 +13,52 @@ ISO_FMT = "%Y-%m-%d"
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}")
 
-def _unwrap_record(self, r: Dict[str, Any]) -> Dict[str, Any]:
+def _get_version(n):
+    return (getattr(n, "version", None)
+            or (n.get("version") if isinstance(n, dict) else None)
+            or "")
+
+def _get_release(n):
+    # dict or object
+    return (getattr(n, "release", None)
+            or (n.get("release") if isinstance(n, dict) else None)
+            or getattr(n, "name", None)
+            or (n.get("name") if isinstance(n, dict) else None)
+            or "")
+
+def _coerce_time(self, t):
+    if t is None:
+        return None
+    if isinstance(t, (int, float)):
+        if t > 10_000_000_000:  # 13位→毫秒
+            return datetime.fromtimestamp(t / 1000.0, tz=timezone.utc)
+        return datetime.fromtimestamp(t, tz=timezone.utc)
+    if isinstance(t, str):
+        try:
+            return datetime.fromisoformat(t.replace("Z", "+00:00"))
+        except Exception:
+            return None
+    return t if isinstance(t, datetime) else None
+
+def _get_time(self, n):
+    raw = (getattr(n, "time", None)
+           or (n.get("time") if isinstance(n, dict) else None)
+           or (n.get("timestamp") if isinstance(n, dict) else None))
+    return _coerce_time(raw)
+
+def _node_key(self, n):
+    # remove repeatations：release|version|time
+    tt = _get_time(n)
+    return f"{_get_release(n)}|{_get_version(n)}|{tt.isoformat() if tt else ''}"
+
+def _unwrap_record(r: Dict[str, Any]) -> Dict[str, Any]:
     if "data" in r and isinstance(r["data"], dict):
         return r["data"]
     if "builder_payload" in r and isinstance(r["builder_payload"], dict):
         return r["builder_payload"]
     return r
 
-def _extract_cve_id(self, r: Dict[str, Any]) -> Optional[str]:
+def _extract_cve_id(r: Dict[str, Any]) -> Optional[str]:
     # prioritize standard keys in data.aliases
     for k in ["cve_id", "cve", "id"]:
         v = r.get(k)

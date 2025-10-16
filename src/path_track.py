@@ -351,7 +351,39 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
                 t_end=cfg.t_end
             )
 
+        # =========== for debug ===========
+        src_in_dep = source in self.depgraph
+        src_in_D = source in D
+        src_ts = None
+        try:
+            src_ts = self.depgraph.nodes[source].get("timestamp")
+        except Exception:
+            pass
+        print(f"[debug] source in depgraph? {src_in_dep}, in D? {src_in_D}, timestamp={src_ts}")
+
         if source not in D:
+            # Diagnose
+            dep = self.depgraph
+            reason = []
+            if source not in dep:
+                # Try a simple normalization: strip leading 'n' if present and retry
+                alt = source[1:] if isinstance(source, str) and source.startswith('n') else None
+                if alt is not None and alt in dep:
+                    source = alt  # adopt normalized ID
+                else:
+                    reason.append("source ID not in depgraph")
+            if source in dep and source not in D:
+                ts = dep.nodes[source].get("timestamp")
+                if ts is None:
+                    reason.append("source node missing 'timestamp'")
+                else:
+                    reason.append(f"source timestamp {ts} outside window [{cfg.t_start}, {cfg.t_end}]")
+
+            if source not in D:
+                details = "; ".join(reason) or "unknown"
+                raise ValueError(
+                    f"Root cause source={source} not present in temporal window ({details})"
+                )
             raise ValueError(f"Root cause source={source} not present in temporal window")
 
         # 3) get target set

@@ -19,6 +19,13 @@ from bisect import bisect_left, bisect_right
 from cent.helper import _build_time_index, _iter_windows, _node_in_window
 import numpy as np
 import scipy.sparse as sp
+from scipy.sparse.linalg import eigsh
+
+try:
+    from joblib import Parallel, delayed
+    _HAS_JOBLIB = True
+except Exception:
+    _HAS_JOBLIB = False
 
 class TempCentricity:
     """ Calculate temporal centricity for nodes in a graph
@@ -40,11 +47,27 @@ class TempCentricity:
 
         # preset time interval, used for half search
         nodes, ts = zip(*[(n, int(d.get("timestamp", 0))) for n, d in graph.nodes(data=True)]) if graph.number_of_nodes() else ([],[])
-
-        self._nodes_sorted_by_t = [n for _, n in sorted(zip(ts, nodes))]
-        self._ts_sorted = sorted(ts)
+        order = np.argsort(ts)
+        self._nodes_sorted_by_t = [nodes[i] for i in order]
+        self._ts_sorted = [ts[i] for i in order]
         print(f"sorted timestamps: {self._ts_sorted[:10]} ... {self._ts_sorted[-10:]}")
         self._tmin, self._tmax = (self._ts_sorted[0], self._ts_sorted[-1]) if self._ts_sorted else (0, 0)
+
+        # Map node -> position in timestamp order (so windows become contiguous-ish ranges)
+        self._pos = {n: i for i, n in enumerate(self._nodes_sorted_by_t)}
+
+        # Build a single CSR adjacency (undirected) in *timestamp order*
+        idx = self._pos
+        rows, cols = [], []
+        for u, v in graph.edges():
+            iu, iv = idx[u], idx[v]
+            if iu == iv: 
+                continue
+            rows.append(iu); cols.append(iv)
+            rows.append(iv); cols.append(iu)
+        data = np.ones(len(rows), dtype=np.float32)
+        n = len(self._nodes_sorted_by_t)
+        self._A = sp.csr_matrix((data, (rows, cols)), shape=(n, n), dtype=np.float32)
 
         # calculate static baseline once
         self._static_dc = self._compute_static_dc()
@@ -60,6 +83,25 @@ class TempCentricity:
         win = max(0, min(t_e, self._tmax + 1) - max(t_s, self._tmin))
         return win/total
     
+
+    def _nodes_idx_in_window(self, t_s: int, t_e: int):
+        """Return index range [L, R) in timestamp order."""
+        if not self._ts_sorted:
+            return 0, 0
+        from bisect import bisect_left
+        L = bisect_left(self._ts_sorted, t_s)
+        R = bisect_left(self._ts_sorted, t_e)
+        return L, R
+
+    def _mask_for_window(self, t_s: int, t_e: int):
+        """Fast boolean mask in timestamp index space."""
+        L, R = self._nodes_idx_in_window(t_s, t_e)
+        if L >= R:
+            return None, L, R
+        m = np.zeros(self._A.shape[0], dtype=bool)
+        m[L:R] = True
+        return m, L, R
+
     def _nodes_in_window(self, t_s: int, t_e: int):
         if not self._ts_sorted:
             return []
@@ -183,25 +225,26 @@ class TempCentricity:
     @functools.lru_cache(maxsize=2048)
     def degree_centrality(self, t_s, t_e):
         '''
-        compute degree centrality for nodes in the temporal subgraph
+        compute degree centrality for nodes in the temporal window via CSR ops
         '''
-        # if self.search_scope == "auto" and self._coverage(t_s, t_e) >= self.global_cover:
-        #     return self._static_dc
-        
-        # nodes = self._nodes_in_window(t_s, t_e)
+        # Global shortcut
+        if self.search_scope == "auto" and self._coverage(t_s, t_e) >= self.global_cover:
+            return self._static_dc
 
-        H = self._extract_temporal_subgraph(t_s, t_e)
-
-        # For DiGraph you can choose in/out/total:
-        if H.is_directed():
-            return {
-                "in": nx.in_degree_centrality(H),
-                "out": nx.out_degree_centrality(H),
-                "total": nx.degree_centrality(H.to_undirected())
-            }
-        else:
-            return nx.degree_centrality(H)
+        m, L, R = self._mask_for_window(t_s, t_e)
+        if m is None:
+            return {}
+        n_win = int(m.sum())
+        if n_win < 2:
+            return {}
         
+        mx = m.astype(np.float32)
+        deg_all = (self._A @ mx)[m]
+        vals = (deg_all / (n_win - 1)).astype(float)
+
+        nodes = self._nodes_sorted_by_t[L:R]
+        return {nodes[i]: float(vals[i]) for i in range(n_win)}
+    
     @functools.lru_cache(maxsize=8192)
     def eigenvector_centrality(self, t_s, t_e):
         '''
@@ -215,30 +258,106 @@ class TempCentricity:
             return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
 
     @functools.lru_cache(maxsize=8192)
-    def eigenvector_centrality_sparse(self, t_s, t_e, v0=None, max_iter=200, tol=1e-4):
-        H = self._extract_temporal_subgraph(t_s, t_e)
-        # directed graph uses PageRank as the equalient
-        if H.is_directed():
-            pr = nx.pagerank(H)
-            nodes = list(H.nodes())
-            vec = np.array([pr.get(n, 0.0) for n in nodes], dtype=float)
-            return pr, vec, nodes
-        
-        # undirected graph, use sparse power iteration
-        nodes, A = self._to_csr_undirected(H)
-        if len(nodes) == 0:
+    def eigenvector_centrality_sparse(self, t_s, t_e, v0=None, max_iter=150, tol=3e-4):
+        if self.search_scope == "global" or (self.search_scope == "auto" and self._coverage(t_s, t_e) >= self.global_cover):
+            G = self.graph
+            if G.is_directed():
+                pr = self._static_evc
+                nodes = list(G.nodes())
+                vec = np.array([pr.get(n, 0.0) for n in nodes], dtype=float)
+                return pr, vec, nodes
+            else:
+                evc = self._static_evc
+                nodes = list(G.nodes())
+                vec = np.array([evc[n] for n in nodes], dtype=float)
+                return evc, vec, nodes
+            
+        m, L, R = self._mask_for_window(t_s, t_e)
+        if m is None:
             return {}, None, []
-        vec = self._evc_sparse_power_iter(A, v0=v0, max_iter=max_iter, tol=tol)
-        evc = {nodes[i]: float(vec[i]) for i in range(len(nodes))}
-        return evc, vec, nodes
+
+        A_win = self._A[L:R, L:R]
+        n_win = A_win.shape[0]
+        if n_win == 0:
+            return {}, None, []
+        nodes = self._nodes_sorted_by_t[L:R]
+        if n_win == 1 or A_win.nnz == 0:
+            evc = {nodes[i]: (1.0 if n_win == 1 else 0.0) for i in range(n_win)}
+            vec = np.array([evc[n] for n in nodes], dtype=float) if n_win else None
+            return evc, vec, nodes
+        
+        v0_local = None
+        if v0 is not None and len(v0) == n_win:
+            v0_local = v0 / (np.linalg.norm(v0) + 1e-12)
+
+        try:
+            # largest algebraic eigenpair; symmetric matrix
+            w, x = eigsh(A_win, k=1, which='LA', v0=v0_local, maxiter=max_iter, tol=tol)
+            x = x[:, 0]
+            x /= (np.linalg.norm(x) + 1e-12)
+        except Exception:
+            x = self._evc_sparse_power_iter(A_win, v0=v0_local, max_iter=max_iter, tol=tol)
+
+        evc = {nodes[i]: float(x[i]) for i in range(n_win)}
+        return evc, x, nodes
 
 
 # speed up tempcentricity computation with centrality based filtering first
-def _probe_score_for_r(G, r, top_agg="sum"):
-    ''' Use degree centrality to run a circle on a non-overlapping sliding window with step=win, 
-    and take the maximum window score as the score of r
+def _probe_score_for_r_sparse(A: sp.csr_matrix, ts_sorted, r, top_agg="sum"):
+    ''' CSR-based non-overlapping sliding window scoring via degree centrality
+    args:
+        A: sparse undirected adjacency for the whole graph, in the same order as ts_sorted
+        ts_sorted: 
+    '''    
     
-    '''
+    if not ts_sorted:
+        return -np.inf
+    
+    t_min, t_max = ts_sorted[0], ts_sorted[-1]
+
+    T = t_max - t_min
+    if T<=0:
+        return -np.inf
+    
+    win = max(1e-12, float(r) * T)
+    step = win
+    best = -np.inf
+    N = len(ts_sorted)
+    i = 0
+
+    while i < N:
+        t_s = ts_sorted[i]
+        t_e = t_s + win
+        # get right boundary
+        R = bisect_left(ts_sorted, t_e, lo=i, hi=N)
+        # Skip tiny windows
+        if R - i < 2:
+            i = max(i + 1, R)
+            continue
+        m = np.zeros(N, dtype=bool)
+        m[i:R] = True
+        # for multiplication
+        mx = m.astype(np.float32)
+        deg_all = (A @ mx)[m]
+        n_win = int(m.sum())
+        if n_win >=2:
+            if top_agg == "sum":
+                val = float(deg_all.sum() / (n_win - 1))
+            elif top_agg == "max":
+                val = float(deg_all.max() / (n_win - 1))
+            else:
+                val = float(deg_all.mean() / (n_win - 1))
+            if val > best:
+                best = val
+        # first index >= t_s + step
+        j = bisect_left(ts_sorted, t_s + step, lo=R, hi=N)
+        i = max(j, R)
+    return best
+
+
+def _probe_score_for_r(G, r, top_agg="sum"):
+    ''' Backward-compatible NX version (kept in case callers still import it) '''
+
     t_min, t_max = _build_time_index(G)
     T = t_max - t_min
     if T<=0:
@@ -261,14 +380,35 @@ def _probe_score_for_r(G, r, top_agg="sum"):
             best = val
     return best
 
-def probe_topk_r_candidates(G, r_candidates, topk=5, agg="sum"):
-    scored = []
-    for r in r_candidates:
-        s = _probe_score_for_r(G, r, top_agg=agg)
-        scored.append((r, float(s)))
-    scored.sort(key=lambda x: x[1], reverse=True)
-    return tuple(r for r, _ in scored[:topk])
 
+def probe_topk_r_candidates(obj, r_candidates, topk=5, agg="sum", n_jobs=-1):
+    '''
+    if 'obj' is a TempCentricity instance, use its internal CSR for fast scoring
+    otherwise fallback to NetworkX version
+
+    n_jobs: number of parallel jobs, -1 for all cores
+    '''
+    if isinstance(obj, TempCentricity):
+        A = obj._A
+        ts_sorted = obj._ts_sorted
+        if _HAS_JOBLIB and (n_jobs == -1 or n_jobs > 1):
+            scored = Parallel(n_jobs=n_jobs if n_jobs != -1 else -1, prefer="processes")(
+                delayed(_probe_score_for_r_sparse)(A, ts_sorted, r, top_agg=agg)
+                for r in r_candidates
+            )
+        else:
+            scored = [_probe_score_for_r_sparse(A, ts_sorted, r, top_agg=agg) for r in r_candidates]
+        pairs = list(zip(r_candidates, map(float, scored)))
+        pairs.sort(key=lambda x: x[1], reverse=True)
+        return tuple(r for r, _ in pairs[:topk])
+    else:
+        scored = []
+        for r in r_candidates:
+            s = _probe_score_for_r(obj, r, top_agg=agg)
+            scored.append((r, float(s)))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        return tuple(r for r, _ in scored[:topk])
+    
 
 if __name__ == "__main__":
     # data path
@@ -284,9 +424,15 @@ if __name__ == "__main__":
     # create build_series_fn
     build_series_fn = make_build_series_fn_warm(tempcent, 
                                                 agg_fn=lambda pr: agg_network_influence(pr, method="entropy"),
-                                                max_iter=150, tol=1e-4)
+                                                max_iter=150, tol=3e-4)
 
-    r_top = probe_topk_r_candidates(depgraph, r_candidates=(0.5, 0.65, 0.8, 0.9), topk=3, agg="sum")
+    # coarse-to-fine r search
+    r_top = probe_topk_r_candidates(tempcent, r_candidates=(0.5, 0.7, 0.9), topk=2, agg="sum", n_jobs=-1)
+    refined = []
+    for r in r_top:
+        refined.extend([max(0.05, r-0.15), max(0.05, r-0.05), r, min(0.95, r+0.05), min(0.95, r+0.15)])
+    r_top = probe_topk_r_candidates(tempcent, r_candidates=tuple(sorted(set(refined))), topk=3, agg="sum", n_jobs=-1)
+
 
     best = recommend_window_params(
         G = depgraph,

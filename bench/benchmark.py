@@ -111,7 +111,7 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
 
     # initialize community detector
     tcd = TemporalCommDetector(
-        depgraph = depgraph,
+        dep_graph = depgraph,
         timestamps=timestamps,
         cve_scores=node_cve_scores,
         centrality_provider=temcent,
@@ -123,12 +123,14 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
     hit_comm_flags = []
     coverages = []
 
+    commres = tcd.detect_communities(depgraph)
+
     for (t_s, t_e, t_eval) in window_iter():
         tic = time.perf_counter()
-        # return comm id and its score
-        best_comm, cent_scores = tcd.choose_root_community(t_s, t_e)
         # return community result
-        commres = tcd.detect_communities(t_s, t_e)
+        # return comm id and its score
+        best_comm, cent_scores = tcd.choose_root_community(commres.comm_to_nodes, t_s, t_e)
+
         latencies.append((time.perf_counter() - tic) * 1000.0)
 
         if best_comm is None or not commres or not commres.comm_to_nodes:
@@ -310,11 +312,12 @@ def benchmark_full(
     series_scores = []
     hit_comm_flags, coverages = [], []
 
+    commres = tcd.detect_communities(depgraph)
+
     for (t_s, t_e, t_eval) in window_iter():
         tic = time.perf_counter()
         # A ) root community + centrality 
-        best_comm, cent_scores = tcd.choose_root_community(t_s, t_e)
-        commres = tcd.detect_communities(t_s, t_e)
+        best_comm, cent_scores = tcd.choose_root_community(commres.comm_to_nodes, t_s, t_e)
         if best_comm is None or not commres or not commres.comm_to_nodes:
             latencies.append((time.perf_counter() - tic) * 1000.0)
             continue
