@@ -11,14 +11,16 @@ from pathlib import Path
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 import networkx as nx
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import pickle
-from wins.tempwins_tuning import make_build_series_fn_warm, recommend_window_params
+from wins.tempwins_tuning import recommend_window_params
 from utils.helpers import agg_network_influence
 import functools
 from bisect import bisect_left, bisect_right
 from cent.helper import _build_time_index, _iter_windows, _node_in_window
 import numpy as np
 import scipy.sparse as sp
+from typing import List, Tuple, Optional, Dict, Callable
 from scipy.sparse.linalg import eigsh
 
 try:
@@ -46,7 +48,7 @@ class TempCentricity:
         self.global_cover = global_cover
 
         # preset time interval, used for half search
-        nodes, ts = zip(*[(n, int(d.get("timestamp", 0))) for n, d in graph.nodes(data=True)]) if graph.number_of_nodes() else ([],[])
+        nodes, ts = zip(*[(n, float(d.get("timestamp", 0))) for n, d in graph.nodes(data=True)]) if graph.number_of_nodes() else ([],[])
         order = np.argsort(ts)
         self._nodes_sorted_by_t = [nodes[i] for i in order]
         self._ts_sorted = [ts[i] for i in order]
@@ -211,8 +213,14 @@ class TempCentricity:
         if G.is_directed():
             # direct graph uses PageRank as the equalient
             return nx.pagerank(G)
-        else:
-            return nx.eigenvector_centrality(G, max_iter=1000, tol=1e-06)
+        if self._A.shape[0] == 0:
+            return {}
+        # Sparse maximum eigenvector
+        w,x = eigsh(self._A, k =1, which='LA', maxiter=1000, tol=1e-6)
+        x = x[:, 0]
+        x /= (np.linalg.norm(x) + 1e-12)
+        nodes = self._nodes_sorted_by_t
+        return {nodes[i]: float(x[i]) for i in range(len(nodes))}
 
 
     def static_degree(self):
@@ -245,17 +253,17 @@ class TempCentricity:
         nodes = self._nodes_sorted_by_t[L:R]
         return {nodes[i]: float(vals[i]) for i in range(n_win)}
     
-    @functools.lru_cache(maxsize=8192)
-    def eigenvector_centrality(self, t_s, t_e):
-        '''
-        compute eigenvector centrality for nodes in the temporal subgraph
-        '''
-        H = self._extract_temporal_subgraph(t_s, t_e)
-        # Eigenvector for undirected; for directed consider HITS/PageRank
-        if H.is_directed():
-            return nx.pagerank(H)
-        else:
-            return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
+    # @functools.lru_cache(maxsize=8192)
+    # def eigenvector_centrality(self, t_s, t_e):
+    #     '''
+    #     compute eigenvector centrality for nodes in the temporal subgraph
+    #     '''
+    #     H = self._extract_temporal_subgraph(t_s, t_e)
+    #     # Eigenvector for undirected; for directed consider HITS/PageRank
+    #     if H.is_directed():
+    #         return nx.pagerank(H)
+    #     else:
+    #         return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
 
     @functools.lru_cache(maxsize=8192)
     def eigenvector_centrality_sparse(self, t_s, t_e, v0=None, max_iter=150, tol=3e-4):
@@ -334,19 +342,18 @@ def _probe_score_for_r_sparse(A: sp.csr_matrix, ts_sorted, r, top_agg="sum"):
         if R - i < 2:
             i = max(i + 1, R)
             continue
-        m = np.zeros(N, dtype=bool)
-        m[i:R] = True
-        # for multiplication
-        mx = m.astype(np.float32)
-        deg_all = (A @ mx)[m]
-        n_win = int(m.sum())
-        if n_win >=2:
+
+        A_win = A[i:R, i:R]
+        n_win = A_win.shape[0]
+        if n_win >= 2 and A_win.nnz > 0:
+            # internal degree
+            deg_win = np.ravel(A_win.sum(axis=1))
             if top_agg == "sum":
-                val = float(deg_all.sum() / (n_win - 1))
+                val = float(deg_win.sum() / (n_win - 1))
             elif top_agg == "max":
-                val = float(deg_all.max() / (n_win - 1))
+                val = float(deg_win.max() / (n_win - 1))
             else:
-                val = float(deg_all.mean() / (n_win - 1))
+                val = float(deg_win.mean() / (n_win - 1))
             if val > best:
                 best = val
         # first index >= t_s + step
@@ -409,6 +416,72 @@ def probe_topk_r_candidates(obj, r_candidates, topk=5, agg="sum", n_jobs=-1):
         scored.sort(key=lambda x: x[1], reverse=True)
         return tuple(r for r, _ in scored[:topk])
     
+# -------------------- convenience wrapper example --------------------
+# def make_build_series_fn(tempcent_obj, agg_fn: Callable[[Dict], float]):
+#     """
+#     Returns a callable build_series_fn(win_size, step_size) that uses
+#     TempCentricity implementation and aggregation to produce a scalar series.
+#     tempcent_obj must implement .eigenvector_centrality(t_s, t_e)
+#     agg_fn maps from {node: centrality} -> scalar.
+#     """
+#     def build_series(win_size: float, step_size: float):
+#         # discover time range from underlying graph inside tempcent_obj if available
+#         G = getattr(tempcent_obj, "G", None) or getattr(tempcent_obj, "graph", None)
+#         if G is None:
+#             raise ValueError("tempcent_obj must carry the underlying graph as attribute G or graph.")
+#         ts_all = sorted(float(d.get("timestamp", 0)) for _, d in G.nodes(data=True) if d.get("timestamp", None) is not None)
+#         if not ts_all:
+#             return np.asarray([]), np.asarray([])
+#         t_min, t_max = ts_all[0], ts_all[-1]
+#         # sliding windows
+#         t = t_min
+#         centers, scalars = [], []
+#         while t < t_max:
+#             t_s, t_e = t, t + float(win_size)
+#             pr = tempcent_obj.eigenvector_centrality(t_s=t_s, t_e=t_e)
+#             if pr:
+#                 centers.append((t_s + t_e) / 2.0)
+#                 scalars.append(float(agg_fn(pr)))
+#             t += float(step_size)
+#         return np.asarray(centers, dtype=float), np.asarray(scalars, dtype=float)
+#     return build_series
+
+
+def make_build_series_fn_warm(tempcent_obj: TempCentricity, agg_fn, max_iter=150, tol=1e-4):
+
+    t_min, t_max = _build_time_index(tempcent_obj.graph)
+
+    def build_series_fn(win_size, step_size, t_min_override=None, t_max_override=None):
+        _t_min = t_min if t_min_override is None else t_min_override
+        _t_max = t_max if t_max_override is None else t_max_override
+        centers, scalars = [], []
+
+        prev_nodes, prev_vec = None, None
+        for t_s, t_e in _iter_windows(_t_min, _t_max, win_size, step_size):
+            nodes = _node_in_window(tempcent_obj.graph, t_s, t_e)
+            if len(nodes) < 2:
+                continue
+            H = tempcent_obj._extract_temporal_subgraph(t_s, t_e)
+
+            if H.is_directed():
+                scores = tempcent_obj.eigenvector_centrality(t_s, t_e)
+                val = float(agg_fn(scores))
+                centers.append(0.5 * (t_s + t_e))
+                scalars.append(val)
+                prev_nodes, prev_vec = None, None
+            else:
+                curr_nodes = list(H.nodes())
+                v0 = tempcent_obj._warm_start_vector(prev_nodes, prev_vec, curr_nodes)
+                scores, vec, curr_nodes = tempcent_obj.eigenvector_centrality_sparse(
+                    t_s, t_e, v0=v0, max_iter=max_iter, tol=tol)
+                val = float(agg_fn(scores))
+                centers.append(0.5 * (t_s + t_e))
+                scalars.append(val)
+                prev_nodes, prev_vec = curr_nodes, vec
+            
+        return centers, scalars
+    
+    return build_series_fn
 
 if __name__ == "__main__":
     # data path
@@ -432,7 +505,6 @@ if __name__ == "__main__":
     for r in r_top:
         refined.extend([max(0.05, r-0.15), max(0.05, r-0.05), r, min(0.95, r+0.05), min(0.95, r+0.15)])
     r_top = probe_topk_r_candidates(tempcent, r_candidates=tuple(sorted(set(refined))), topk=3, agg="sum", n_jobs=-1)
-
 
     best = recommend_window_params(
         G = depgraph,

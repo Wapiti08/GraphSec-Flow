@@ -510,7 +510,7 @@ def main():
 
     # ----- Path Weighting -----
     ap.add_argument('--k_paths', type=int, default=3, help ='Top-k paths per target')
-    ap.add_argument('--alpha', type=float, default=1.0, help='Weight for time lag')
+    ap.add_argument('--alpha', type=float, default=5.0, help='Weight for time lag')
     ap.add_argument('--beta', type=float, default=0.0, help='Weight for centrality inverse')
     ap.add_argument('--gamma', type=float, default=0.0, help='Weight for node score inverse')
     ap.add_argument('--blend_lambda', type=float, default=0.7, help='Blend sim vs severity (if similarity-json provided)')
