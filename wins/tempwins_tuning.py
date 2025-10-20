@@ -31,7 +31,7 @@ class Candidate:
 
 @dataclass
 class CandidateScore:
-    candiate: Candidate
+    candidate: Candidate
     stability_S: float
     sensitivity_C: float
     resolvability_R: float
@@ -337,68 +337,3 @@ def recommend_window_params(
                 tau_chg=float(tau_chg),
                 w_conn_min=float(w_conn_min))
 
-# -------------------- convenience wrapper example --------------------
-
-def make_build_series_fn(tempcent_obj, agg_fn: Callable[[Dict], float]):
-    """
-    Returns a callable build_series_fn(win_size, step_size) that uses
-    TempCentricity implementation and aggregation to produce a scalar series.
-    tempcent_obj must implement .eigenvector_centrality(t_s, t_e)
-    agg_fn maps from {node: centrality} -> scalar.
-    """
-    def build_series(win_size: float, step_size: float):
-        # discover time range from underlying graph inside tempcent_obj if available
-        G = getattr(tempcent_obj, "G", None) or getattr(tempcent_obj, "graph", None)
-        if G is None:
-            raise ValueError("tempcent_obj must carry the underlying graph as attribute G or graph.")
-        ts_all = sorted(float(d.get("timestamp", 0)) for _, d in G.nodes(data=True) if d.get("timestamp", None) is not None)
-        t_min, t_max = ts_all[0], ts_all[-1]
-        # sliding windows
-        t = t_min
-        centers, scalars = [], []
-        while t < t_max:
-            t_s, t_e = t, t + float(win_size)
-            pr = tempcent_obj.eigenvector_centrality(t_s=t_s, t_e=t_e)
-            if pr:
-                centers.append((t_s + t_e) / 2.0)
-                scalars.append(float(agg_fn(pr)))
-            t += float(step_size)
-        return np.asarray(centers, dtype=float), np.asarray(scalars, dtype=float)
-    return build_series
-
-
-def make_build_series_fn_warm(tempcent_obj, agg_fn, max_iter=150, tol=1e-4):
-
-    t_min, t_max = _build_time_index(tempcent_obj.graph)
-
-    def build_series_fn(win_size, step_size, t_min_override=None, t_max_override=None):
-        _t_min = t_min if t_min_override is None else t_min_override
-        _t_max = t_max if t_max_override is None else t_max_override
-        centers, scalars = [], []
-
-        prev_nodes, prev_vec = None, None
-        for t_s, t_e in _iter_windows(_t_min, _t_max, win_size, step_size):
-            nodes = _node_in_window(tempcent_obj.graph, t_s, t_e)
-            if len(nodes) < 2:
-                continue
-            H = tempcent_obj._extract_temporal_subgraph(t_s, t_e)
-
-            if H.is_directed():
-                scores = tempcent_obj.eigenvector_centrality(t_s, t_e)
-                val = float(agg_fn(scores))
-                centers.append(0.5 * (t_s + t_e))
-                scalars.append(val)
-                prev_nodes, prev_vec = None, None
-            else:
-                curr_nodes = list(H.nodes())
-                v0 = tempcent_obj._warm_start_vector(prev_nodes, prev_vec, curr_nodes)
-                scores, vec, curr_nodes = tempcent_obj.eigenvector_centrality_sparse(
-                    t_s, t_e, v0=v0, max_iter=max_iter, tol=tol)
-                val = float(agg_fn(scores))
-                centers.append(0.5 * (t_s + t_e))
-                scalars.append(val)
-                prev_nodes, prev_vec = curr_nodes, vec
-            
-        return centers, scalars
-    
-    return build_series_fn

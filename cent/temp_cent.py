@@ -253,17 +253,17 @@ class TempCentricity:
         nodes = self._nodes_sorted_by_t[L:R]
         return {nodes[i]: float(vals[i]) for i in range(n_win)}
     
-    # @functools.lru_cache(maxsize=8192)
-    # def eigenvector_centrality(self, t_s, t_e):
-    #     '''
-    #     compute eigenvector centrality for nodes in the temporal subgraph
-    #     '''
-    #     H = self._extract_temporal_subgraph(t_s, t_e)
-    #     # Eigenvector for undirected; for directed consider HITS/PageRank
-    #     if H.is_directed():
-    #         return nx.pagerank(H)
-    #     else:
-    #         return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
+    @functools.lru_cache(maxsize=8192)
+    def eigenvector_centrality(self, t_s, t_e):
+        '''
+        compute eigenvector centrality for nodes in the temporal subgraph
+        '''
+        H = self._extract_temporal_subgraph(t_s, t_e)
+        # Eigenvector for undirected; for directed consider HITS/PageRank
+        if H.is_directed():
+            return nx.pagerank(H)
+        else:
+            return nx.eigenvector_centrality(H, max_iter=300, tol=1e-5)
 
     @functools.lru_cache(maxsize=8192)
     def eigenvector_centrality_sparse(self, t_s, t_e, v0=None, max_iter=150, tol=3e-4):
@@ -490,6 +490,22 @@ if __name__ == "__main__":
     # load the graph
     with depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
+
+    # ---------- for quick debug ------------
+    import random
+    MAX_NODES = 1000  
+    if depgraph.number_of_nodes() > MAX_NODES:
+        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+        # random sampling
+        if len(valid_nodes) < MAX_NODES:
+            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+            keep = valid_nodes
+        else:
+            keep = random.sample(valid_nodes, MAX_NODES)
+        depgraph = depgraph.subgraph(keep).copy()
+        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+
+    # ---------------------------------------
 
     # initialize tempcentricity
     tempcent = TempCentricity(depgraph, search_scope='auto')

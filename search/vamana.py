@@ -492,22 +492,9 @@ if __name__ =="__main__":
     # metrics = eval_node_self_recall(vac, k=5, sample_size=200)
     metrics = eval_node_self_recall(vac, k=5, sample_size=1000)
 
-    # 2) Qualitative evidence 
-    # rows = print_global_top_similar_pairs(vac, per_point_k=5, top_pairs=10, skip_same_node=True)
-    # metrics["global_top_pairs"] = [
-    #     {
-    #         "sim": round(r["similarity"], 6),
-    #         "node_a": r["node_a"], "cve_idx_a": r["cve_idx_a"],
-    #         "node_b": r["node_b"], "cve_idx_b": r["cve_idx_b"],
-    #         "text_a_snip": r["text_a_snip"],
-    #         "text_b_snip": r["text_b_snip"],
-    #     }
-    #     for r in rows
-    # ]
-
     report_name = f"vamana_M{vac.ann.M}_efc{vac.ann.ef_construction}_efs{getattr(vac.ann,'ef_search',0)}_{getattr(vac.embedder,'model_name','unknown')}.json"
 
-    # 3) Persist a small JSON report for reproducibility
+    # 2) Persist a small JSON report for reproducibility
     write_eval_report(
         report_name,
         coverage=coverage,

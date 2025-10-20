@@ -8,7 +8,7 @@ from datetime import datetime, date
 from collections import defaultdict
 import pandas as pd
 import bisect
-
+import time
 
 def _to_date(x):
     ''' convert published/modified timestamp string (2023-09-12T15:15:24Z) in OSV to date
@@ -58,6 +58,14 @@ def _to_same_type(t, ref_type):
     if isinstance(ref_type, datetime):
         return datetime.combine(t, datetime.min.time())
     return t 
+
+def _to_float_time(t):
+    if isinstance(t, datetime):
+        return t.timestamp()
+    elif isinstance(t, date):
+        return time.mktime(t.timetuple())
+    else:
+        return float(t)
 
 # ------------ generate events according to earliest timestamp --------------
 def build_events_from_vamana_meta(

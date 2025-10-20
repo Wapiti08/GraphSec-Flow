@@ -23,10 +23,13 @@ from cve.cvescore import _normalize_cve_id
 from utils.util import _first_nonempty, _synth_text_from_dict
 from typing import Dict, List, Tuple, Optional, Any
 from cve.cveinfo import osv_cve_api
-from eval.events import _first_cve_data_of_node, _last_cve_data_of_node, _to_same_type
+from eval.events import _first_cve_data_of_node, _last_cve_data_of_node, _to_same_type, _to_float_time
 from datetime import datetime, timedelta
 import pandas as pd
 from bench.helper import load_cached_scores, _safe_node_timestamps, _mask_or_fill, _f1_from_paths
+
+import random
+random.seed(0)
 
 def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
     '''
@@ -73,7 +76,7 @@ def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
     # dynamic centrality
     for name, fn in [
         ("Temporal-DC", lambda t_s, t_e: _pick_total(tempcent.degree_centrality(t_s, t_e))),
-        ("Temporal-EVC", lambda t_s, t_e: tempcent.eigenvector_centrality(t_s, t_e)),
+        ("Temporal-EVC", lambda t_s, t_e: tempcent.eigenvector_centrality_sparse(t_s, t_e)[0]),
     ]:
         latencies = []
         mrrs, h3s = [], []
@@ -198,7 +201,7 @@ def benchmark_paths(
     analyzer = RootCausePathAnalyzer(
         depgraph = depgraph,
         vamana = vamana,
-        cve_scores = node_cve_scores,
+        node_cve_scores = node_cve_scores,
         timestamps = timestamps,
         centrality=tempcent,
         search_scope="auto"
@@ -212,8 +215,8 @@ def benchmark_paths(
         tic = time.perf_counter()
         # assign pathconfig to every window
         pcfg = PathConfig(
-            t_start = float(pd.Timestamp(t_s).timestamp()),
-            t_end = float(pd.Timestamp(t_e).timestamp()),
+            t_start = float(t_s),
+            t_end = float(t_e),
             strict_increase = strict_increase,
             alpha = alpha, beta=beta, gamma=gamma,
             k_paths = k_paths,
@@ -293,7 +296,7 @@ def benchmark_full(
     analyzer = RootCausePathAnalyzer(
         depgraph=depgraph,
         vamana=vamana,
-        cve_scores=node_cve_scores,
+        node_cve_scores=node_cve_scores,
         timestamps=timestamps,
         centrality=tempcent,
         search_scope='auto',
@@ -413,7 +416,23 @@ if __name__ == "__main__":
     # ---------- load dependency graph -----------
     with dep_path.open("rb") as f:
         depgraph = pickle.load(f)
-    
+
+    # ----------- for quick test ---------
+    MAX_NODES = 1000  
+    if depgraph.number_of_nodes() > MAX_NODES:
+        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+        # random sampling
+        if len(valid_nodes) < MAX_NODES:
+            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+            keep = valid_nodes
+        else:
+            keep = random.sample(valid_nodes, MAX_NODES)
+        depgraph = depgraph.subgraph(keep).copy()
+        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+
+    # ------------------------------------
+
+
     # ---------- load nodeid_to_texts & cve_records_for_meta -----------
     nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
     cve_records_for_meta = pickle.loads(cve_meta_path.read_bytes())
@@ -463,18 +482,22 @@ if __name__ == "__main__":
         t_eval_list,
         fallback_to_release=True
     )
+
+    events = [{**e, "t": _to_float_time(e["t"])} for e in events]
+
     print(f"[info] {len(events)} evaluation events from {t_eval_list[0]} to {t_eval_list[-1]}")
 
     # ------- time window iterator ---------
     ref_type = pd.Timestamp.now(tz="UTC")
+
     def window_iter():
         for d_eval in t_eval_list:
             d_s = d_eval - timedelta(days=lookback_days)
             d_e = d_eval
             yield (
-                _to_same_type(d_s, ref_type),
-                _to_same_type(d_e, ref_type),
-                d_eval,
+                _to_float_time(_to_same_type(d_s, ref_type)),
+                _to_float_time(_to_same_type(d_e, ref_type)),
+                _to_float_time(d_eval),
             )
 
     # --------- Run Benchmarks ---------
@@ -498,13 +521,13 @@ if __name__ == "__main__":
 
     # path & full
     pathm = benchmark_paths(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
-                            k_neighbors=15, alpha=1.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False)
+                            k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False)
     all_metrics.update(pathm)
     print("[info] Path benchmark done")
     print("current metrics:", all_metrics)
 
     fullm = benchmark_full(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
-                           k_neighbors=15, alpha=1.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, fuse_lambda=0.6)
+                           k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, fuse_lambda=0.6)
     all_metrics.update(fullm)
 
     print(all_metrics)

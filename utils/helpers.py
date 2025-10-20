@@ -56,6 +56,7 @@ def _fwhm_widths(x: np.ndarray, y: np.ndarray, peaks: np.ndarray) -> List[float]
             i -= 1
         left_x = x[i]
         # right
+        j = p
         while j < len(y) - 1 and y[j] > half:
             j += 1
         right_x = x[j]

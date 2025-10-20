@@ -26,7 +26,6 @@ def load_cached_scores():
     print(f"[load] Loaded {len(per_cve_scores)} CVE scores and {len(node_cve_scores)} node scores.")
     return per_cve_scores, node_cve_scores
 
-
 def _safe_node_timestamps(depgraph):
     ts = {}
     for n, a in depgraph.nodes(data=True):

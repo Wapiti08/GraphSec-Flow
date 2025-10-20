@@ -129,17 +129,29 @@ class TemporalCommDetector:
         returns (best_comm_id, comm_scores)
         '''
         print("Extracting root community within time interval", t_s, t_e)
-        cent_scores = self.centrality_provider.eigenvector_centrality(t_s, t_e)
+        evc_dict, _, _ = self.centrality_provider.eigenvector_centrality_sparse(t_s, t_e)
+
         best_comm = None
         best_score = float("-inf")
-
+        
+        if not evc_dict:
+            for comm, nodes in comm_to_nodes.items():
+                cve_sum = sum(self.cve_scores.get(n, 0.0) for n in nodes)
+                min_ts = min(self.timestamps.get(n, float("inf")) for n in nodes)
+                score = cve_sum - min_ts
+                if score > best_score:
+                    best_score = score
+                    best_comm = comm
+            
+            return best_comm, evc_dict
+        
         for comm, nodes in comm_to_nodes.items():
-            score = self._community_score(nodes, cent_scores)
+            if not nodes:
+                continue
+            score = self._community_score(nodes, evc_dict)
             if score > best_score:
                 best_score = score
                 best_comm = comm
-        
-        return best_comm, cent_scores
-    
 
-    
+        return best_comm, evc_dict
+        

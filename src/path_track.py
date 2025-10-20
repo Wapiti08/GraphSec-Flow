@@ -536,7 +536,57 @@ def main():
     # load initial parameters
 
     nodes = list(graph_obj.nodes)
+
     depgraph = graph_obj if isinstance(graph_obj, nx.Graph) else None
+
+    # ---------- for quick test ------------
+    import random
+
+    seeds = []
+    max_nodes = 1000
+    random.seed(0)
+
+    # 仅考虑带 timestamp 的节点，避免后面再额外删一遍
+    candidates = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+
+    # 从参数里收集种子
+    if getattr(args, "source", None) and args.source in depgraph and "timestamp" in depgraph.nodes[args.source]:
+        seeds.append(args.source)
+
+    if getattr(args, "targets", None):
+        seeds.extend([t for t in args.targets if t in depgraph and "timestamp" in depgraph.nodes[t]])
+
+    keep = set(seeds)
+
+    # 如果没给 source/targets，则回退到合理的默认集合
+    if not keep:
+        if len(candidates) == 0:
+            raise ValueError("Graph has no nodes with 'timestamp'; nothing to keep.")
+        if depgraph.number_of_nodes() > max_nodes:
+            keep.update(random.sample(candidates, min(max_nodes, len(candidates))))
+        else:
+            keep.update(candidates)
+
+    # 如果给了 seeds，但图很大，也可以在 seeds 的基础上补一些节点（可选）
+    elif depgraph.number_of_nodes() > max_nodes and len(keep) < max_nodes:
+        pool = [n for n in candidates if n not in keep]
+        need = max_nodes - len(keep)
+        if pool:
+            keep.update(random.sample(pool, min(len(pool), need)))
+
+    # 用 keep 来收缩图（不要再用 seeds）
+    depgraph = depgraph.subgraph(keep).copy()
+
+    # 刷新 nodes
+    nodes = list(depgraph.nodes())
+
+    # 保险：再清掉任何意外缺少 timestamp 的节点
+    missing_ts = [n for n, a in depgraph.nodes(data=True) if "timestamp" not in a]
+    if missing_ts:
+        depgraph.remove_nodes_from(missing_ts)
+        nodes = [n for n in nodes if n not in missing_ts]
+
+    # ---------------------------------------------------------
 
     unique_cve_ids = {
         cid for _, attrs in depgraph.nodes(data=True) 
