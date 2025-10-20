@@ -22,6 +22,7 @@ import numpy as np
 import scipy.sparse as sp
 from typing import List, Tuple, Optional, Dict, Callable
 from scipy.sparse.linalg import eigsh
+import time
 
 try:
     from joblib import Parallel, delayed
@@ -484,44 +485,66 @@ def make_build_series_fn_warm(tempcent_obj: TempCentricity, agg_fn, max_iter=150
     return build_series_fn
 
 if __name__ == "__main__":
+
+    t0_total = time.perf_counter()
+
     # data path
     depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
 
+    t0 = time.perf_counter()
     # load the graph
     with depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
 
+    print(f"[info] Graph loaded: {depgraph.number_of_nodes()} nodes, "
+          f"{depgraph.number_of_edges()} edges "
+          f"(took {time.perf_counter() - t0:.2f}s)")
+    
     # ---------- for quick debug ------------
-    import random
-    MAX_NODES = 1000  
-    if depgraph.number_of_nodes() > MAX_NODES:
-        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-        # random sampling
-        if len(valid_nodes) < MAX_NODES:
-            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-            keep = valid_nodes
-        else:
-            keep = random.sample(valid_nodes, MAX_NODES)
-        depgraph = depgraph.subgraph(keep).copy()
-        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+    # import random
+    # MAX_NODES = 1000  
+    # if depgraph.number_of_nodes() > MAX_NODES:
+    #     valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+    #     # random sampling
+    #     if len(valid_nodes) < MAX_NODES:
+    #         print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+    #         keep = valid_nodes
+    #     else:
+    #         keep = random.sample(valid_nodes, MAX_NODES)
+    #     depgraph = depgraph.subgraph(keep).copy()
+    #     print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
 
     # ---------------------------------------
 
     # initialize tempcentricity
+    t1 = time.perf_counter()
+
     tempcent = TempCentricity(depgraph, search_scope='auto')
-    
-    # create build_series_fn
+    print(f"[info] TempCentricity initialized (took {time.perf_counter() - t1:.2f}s)")
+
+    # ------------- build_series_fn -------------
+    t2 = time.perf_counter()
+
     build_series_fn = make_build_series_fn_warm(tempcent, 
                                                 agg_fn=lambda pr: agg_network_influence(pr, method="entropy"),
                                                 max_iter=150, tol=3e-4)
-
-    # coarse-to-fine r search
+    print(f"[info] build_series_fn constructed (took {time.perf_counter() - t2:.2f}s)")
+    
+    # ------------- coarse-to-fine r search -----------------
+    t3 = time.perf_counter()
     r_top = probe_topk_r_candidates(tempcent, r_candidates=(0.5, 0.7, 0.9), topk=2, agg="sum", n_jobs=-1)
+    print(f"[info] initial r probing done (took {time.perf_counter() - t3:.2f}s)")
+
     refined = []
     for r in r_top:
         refined.extend([max(0.05, r-0.15), max(0.05, r-0.05), r, min(0.95, r+0.05), min(0.95, r+0.15)])
+    
+    t4 = time.perf_counter()
     r_top = probe_topk_r_candidates(tempcent, r_candidates=tuple(sorted(set(refined))), topk=3, agg="sum", n_jobs=-1)
+    print(f"[info] refined r probing done (took {time.perf_counter() - t4:.2f}s)")
 
+    # ------------------ recommend window params ------------------
+    t5 = time.perf_counter()
     best = recommend_window_params(
         G = depgraph,
         build_series_fn = build_series_fn,
@@ -531,8 +554,14 @@ if __name__ == "__main__":
         r_candidates=r_top,
         beta=1.0
     )
+    t5_end = time.perf_counter()
+    print(f"[info] recommend_window_params finished (took {t5_end - t5:.2f}s)")
+    print("[result] Best window params:", best)
 
-    print(best)
+    # ------------------ Total runtime ------------------
+    total_time = time.perf_counter() - t0_total
+    print(f"\n[summary] Total evaluation time: {total_time:.2f} seconds "
+          f"({total_time/60:.2f} minutes)")
 
 
 

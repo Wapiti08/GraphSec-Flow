@@ -215,8 +215,8 @@ def benchmark_paths(
         tic = time.perf_counter()
         # assign pathconfig to every window
         pcfg = PathConfig(
-            t_start = float(t_s),
-            t_end = float(t_e),
+            t_start = t_s,
+            t_end = t_e,
             strict_increase = strict_increase,
             alpha = alpha, beta=beta, gamma=gamma,
             k_paths = k_paths,
@@ -495,10 +495,10 @@ if __name__ == "__main__":
             d_s = d_eval - timedelta(days=lookback_days)
             d_e = d_eval
             yield (
-                _to_float_time(_to_same_type(d_s, ref_type)),
-                _to_float_time(_to_same_type(d_e, ref_type)),
-                _to_float_time(d_eval),
-            )
+                _to_float_time(_to_same_type(d_s, ref_type)) * 1000.0,
+                _to_float_time(_to_same_type(d_e, ref_type)) * 1000.0,
+                _to_float_time(d_eval) * 1000.0,
+                )
 
     # --------- Run Benchmarks ---------
     all_metrics = {}
