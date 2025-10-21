@@ -412,7 +412,6 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
             t_end: Optional[float] = None,
             path_cfg: Optional[PathConfig] = None,
             explain: bool = False,
-            source = None,
             ):
         ''' 
         dentify root cause (unless 'source' is provided), then compute propagation paths from it.
@@ -421,11 +420,7 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
         records: list of path summaries
         '''
         # 1) ------ root cause choice ------------
-        if source is not None:
-            root_comm = None
-            root_node = source
-        else:
-            root_comm, root_node, _ = self.analyze(
+        root_comm, root_node, _ = self.analyze(
                             query_vector=getattr(self, "query_vector", None),
                             k=int(k_neighbors), 
                             t_start=t_start, t_end=t_end, 
@@ -564,51 +559,51 @@ def main():
     depgraph = graph_obj if isinstance(graph_obj, nx.Graph) else None
 
     # ---------- for quick test ------------
-    import random
+    # import random
 
-    seeds = []
-    max_nodes = 1000
-    random.seed(0)
+    # seeds = []
+    # max_nodes = 1000
+    # random.seed(0)
 
-    # 仅考虑带 timestamp 的节点，避免后面再额外删一遍
-    candidates = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+    # # 仅考虑带 timestamp 的节点，避免后面再额外删一遍
+    # candidates = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
 
-    # 从参数里收集种子
-    if getattr(args, "source", None) and args.source in depgraph and "timestamp" in depgraph.nodes[args.source]:
-        seeds.append(args.source)
+    # # 从参数里收集种子
+    # if getattr(args, "source", None) and args.source in depgraph and "timestamp" in depgraph.nodes[args.source]:
+    #     seeds.append(args.source)
 
-    if getattr(args, "targets", None):
-        seeds.extend([t for t in args.targets if t in depgraph and "timestamp" in depgraph.nodes[t]])
+    # if getattr(args, "targets", None):
+    #     seeds.extend([t for t in args.targets if t in depgraph and "timestamp" in depgraph.nodes[t]])
 
-    keep = set(seeds)
+    # keep = set(seeds)
 
-    # 如果没给 source/targets，则回退到合理的默认集合
-    if not keep:
-        if len(candidates) == 0:
-            raise ValueError("Graph has no nodes with 'timestamp'; nothing to keep.")
-        if depgraph.number_of_nodes() > max_nodes:
-            keep.update(random.sample(candidates, min(max_nodes, len(candidates))))
-        else:
-            keep.update(candidates)
+    # # 如果没给 source/targets，则回退到合理的默认集合
+    # if not keep:
+    #     if len(candidates) == 0:
+    #         raise ValueError("Graph has no nodes with 'timestamp'; nothing to keep.")
+    #     if depgraph.number_of_nodes() > max_nodes:
+    #         keep.update(random.sample(candidates, min(max_nodes, len(candidates))))
+    #     else:
+    #         keep.update(candidates)
 
-    # 如果给了 seeds，但图很大，也可以在 seeds 的基础上补一些节点（可选）
-    elif depgraph.number_of_nodes() > max_nodes and len(keep) < max_nodes:
-        pool = [n for n in candidates if n not in keep]
-        need = max_nodes - len(keep)
-        if pool:
-            keep.update(random.sample(pool, min(len(pool), need)))
+    # # 如果给了 seeds，但图很大，也可以在 seeds 的基础上补一些节点（可选）
+    # elif depgraph.number_of_nodes() > max_nodes and len(keep) < max_nodes:
+    #     pool = [n for n in candidates if n not in keep]
+    #     need = max_nodes - len(keep)
+    #     if pool:
+    #         keep.update(random.sample(pool, min(len(pool), need)))
 
-    # 用 keep 来收缩图（不要再用 seeds）
-    depgraph = depgraph.subgraph(keep).copy()
+    # # 用 keep 来收缩图（不要再用 seeds）
+    # depgraph = depgraph.subgraph(keep).copy()
 
-    # 刷新 nodes
-    nodes = list(depgraph.nodes())
+    # # 刷新 nodes
+    # nodes = list(depgraph.nodes())
 
-    # 保险：再清掉任何意外缺少 timestamp 的节点
-    missing_ts = [n for n, a in depgraph.nodes(data=True) if "timestamp" not in a]
-    if missing_ts:
-        depgraph.remove_nodes_from(missing_ts)
-        nodes = [n for n in nodes if n not in missing_ts]
+    # # 保险：再清掉任何意外缺少 timestamp 的节点
+    # missing_ts = [n for n, a in depgraph.nodes(data=True) if "timestamp" not in a]
+    # if missing_ts:
+    #     depgraph.remove_nodes_from(missing_ts)
+    #     nodes = [n for n in nodes if n not in missing_ts]
 
     # ---------------------------------------------------------
 
@@ -723,26 +718,46 @@ def main():
     )
 
     # auto-select source if needed
-
-    root_comm, root_node, D, paths_by_t, records = None, None, None, {}, []
-    
     source = args.source
     if source:
         # explicit source mode
+        try:
+            D, paths_by_t = rcp._compute_paths_from_source(source, path_cfg)
+        except ValueError as e:
+            raise SystemError(str(e))
+        # summaries
+        records: List[Dict[str, Any]] = []
+
+        for t, paths in paths_by_t.items():
+            for i, p in enumerate(paths, 1):
+                s = summarize_path(D, p)
+                total_w = 0.0
+                for u, v in zip(p[:-1], p[1:]):
+                    total_w += float(D[u][v].get('weight', 0.0))
+                records.append({
+                    'target': t,
+                    'rank': i,
+                    'score': total_w,
+                    'path': p,
+                    'length': s['length'],
+                    'total_cves': s['total_cves'],
+                    'max_severity': s['max_severity']
+                })
+        root_comm, root_node = None, args.source
+
+    else:
+        print("timestamp range:", args.t_start, args.t_end)
+        # root-cause first, then paths
         result = rcp.analyze_with_paths(
             k_neighbors=int(args.rca_k),
             t_start=args.t_start,
             t_end=args.t_end,
             path_cfg=path_cfg,
-            explain=bool(args.rca_explain),
-            source = source
+            explain=bool(args.rca_explain)
         )
-
-        if not result:
-            print(f"[warn] No paths found (explicit source={source}).")
-            root_comm, root_node, D, paths_by_t, records = None, source, None, {}, []
-        else:
-            root_comm, root_node, D, paths_by_t, records = result
+        if not result or result[1] is None:
+            raise SystemExit("Root cause not found within the given constraints.")
+        root_comm, root_node, D, paths_by_t, records = result
 
     # ---------- Console Preview -----------
     if not records:

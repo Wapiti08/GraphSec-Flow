@@ -27,6 +27,8 @@ from eval.events import _first_cve_data_of_node, _last_cve_data_of_node, _to_sam
 from datetime import datetime, timedelta
 import pandas as pd
 from bench.helper import load_cached_scores, _safe_node_timestamps, _mask_or_fill, _f1_from_paths
+import bisect
+
 
 import random
 random.seed(0)
@@ -213,6 +215,13 @@ def benchmark_paths(
 
     for (t_s, t_e, t_eval) in window_iter():
         tic = time.perf_counter()
+
+        # pick up root per window
+        root_node = pick_root_in_window(candidates, int(t_s), int(t_e))
+        if root_node is None:
+            latencies.append((time.perf_counter() - tic) * 1000.0)
+            continue
+
         # assign pathconfig to every window
         pcfg = PathConfig(
             t_start = t_s,
@@ -226,11 +235,12 @@ def benchmark_paths(
 
         # root cause analysis with paths from t_s to t_e
         _, _, _D, paths_by_target, _records = analyzer.analyze_with_paths(
-        k_neighbors=k_neighbors,
-        t_start=pcfg.t_start,
-        t_end=pcfg.t_end,
-        path_cfg=pcfg,
-        explain=False
+            k_neighbors=k_neighbors,
+            t_start=pcfg.t_start,
+            t_end=pcfg.t_end,
+            path_cfg=pcfg,
+            explain=False,
+            source = root_node
         )
 
         # recrod frequency of nodes in paths
@@ -318,7 +328,9 @@ def benchmark_full(
     commres = tcd.detect_communities(depgraph)
 
     for (t_s, t_e, t_eval) in window_iter():
+
         tic = time.perf_counter()
+
         # A ) root community + centrality 
         best_comm, cent_scores = tcd.choose_root_community(commres.comm_to_nodes, t_s, t_e)
         if best_comm is None or not commres or not commres.comm_to_nodes:
@@ -355,20 +367,20 @@ def benchmark_full(
                 similarity_scores=None
             )
         
-        _, _, _D, paths_by_target, _records = analyzer.analyze_with_paths(
-            k_neighbors=k_neighbors,
-            t_start=pcfg.t_start,
-            t_end=pcfg.t_end,
-            path_cfg=pcfg,
-            explain=False
-        )
+            _, _, _D, paths_by_target, _records = analyzer.analyze_with_paths(
+                k_neighbors=k_neighbors,
+                t_start=pcfg.t_start,
+                t_end=pcfg.t_end,
+                path_cfg=pcfg,
+                explain=False,
+                source=root_node
+            )
 
-        for _t, paths in (paths_by_target or {}).items():
-            for p in paths:
-                for v in p:
-                    path_scores[v] = path_scores.get(v, 0.0) + 1.0   
-
-        
+            for _t, paths in (paths_by_target or {}).items():
+                for p in paths:
+                    for v in p:
+                        path_scores[v] = path_scores.get(v, 0.0) + 1.0   
+            
         # C） aggregation
         all_nodes = set(comm_scores.keys()) | set(path_scores.keys())
         if not all_nodes:
@@ -400,6 +412,23 @@ def benchmark_full(
         }
     }
 
+def pick_root_in_window(cands_sorted, t_s_ms, t_e_ms):
+    ''' cands_sorted: increasing by ts 
+    
+    '''
+    i = bisect.bisect_left(cands_sorted, (t_s_ms, ""))
+    j = bisect.bisect_left(cands_sorted, (t_e_ms, ""))
+
+    if i<j:
+        # choose max ts within a time window
+        return cands_sorted[j-1][1]
+    
+    k = i - 1
+    if k >= 0:
+        return cands_sorted[k][1]
+
+    return None
+
 if __name__ == "__main__":
 
     data_dir = Path.cwd().parent.joinpath("data")
@@ -418,20 +447,26 @@ if __name__ == "__main__":
         depgraph = pickle.load(f)
 
     # ----------- for quick test ---------
-    MAX_NODES = 1000  
-    if depgraph.number_of_nodes() > MAX_NODES:
-        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-        # random sampling
-        if len(valid_nodes) < MAX_NODES:
-            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-            keep = valid_nodes
-        else:
-            keep = random.sample(valid_nodes, MAX_NODES)
-        depgraph = depgraph.subgraph(keep).copy()
-        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+    # MAX_NODES = 1000  
+    # if depgraph.number_of_nodes() > MAX_NODES:
+    #     valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+    #     # random sampling
+    #     if len(valid_nodes) < MAX_NODES:
+    #         print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+    #         keep = valid_nodes
+    #     else:
+    #         keep = random.sample(valid_nodes, MAX_NODES)
+    #     depgraph = depgraph.subgraph(keep).copy()
+    #     print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
 
-    # ------------------------------------
-
+    # -------------- candiate ---------------
+    candidates = []
+    for n, d in depgraph.nodes(data = True):
+        ts = d.get("timestamp")
+        if ts is None:
+            continue
+        if d.get("is_source", True):
+            candidates.append((int(ts), n))
 
     # ---------- load nodeid_to_texts & cve_records_for_meta -----------
     nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
