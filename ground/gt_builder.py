@@ -34,6 +34,8 @@ from datetime import datetime, timezone
 from utils.util import read_jsonl, write_jsonl, _safe_load_pickle
 import time
 from cve.cvescore import _osv_extract_fix_commits
+from functools import lru_cache
+
 # --------------------------------
 # Data Models
 # --------------------------------
@@ -42,6 +44,13 @@ from cve.cvescore import _osv_extract_fix_commits
 class EvidenceItem:
     source: str
     fields: Dict[str, Any] = field(default_factory=dict)
+
+@lru_cache(maxsize=500000)
+def _semver_cached(ver: str):
+    try:
+        return SemVer.parse(ver)
+    except Exception:
+        return None
 
 @dataclass
 class RootCause:
@@ -108,7 +117,16 @@ class DepGraph:
         self.adj: Dict[str, List[Edge]] = defaultdict(list)
         # reverse adjacency list
         self.rev: Dict[str, List[Edge]] = defaultdict(list)
-    
+        # ------- build mapping index to avoid repeated searching ------- 
+        # package -> list of nodes
+        self.by_pkg: Dict[str, List[Node] ] = defaultdict(list)
+        # (package, version) -> node
+        self.by_pkg_ver: Dict[Tuple[str, str], Node] = {}
+        # (group, artifact) -> node
+        self.by_coords: Dict[Tuple[str, str], List[Node]] = defaultdict(list)
+        # node.id -> release lower
+        self.release_lc: Dict[str, str] = {}
+
     @staticmethod
     def from_json(obj: Dict[str, Any]):
         g = DepGraph()
@@ -162,6 +180,20 @@ class DepGraph:
             edge = Edge(src = src, dst = dst, time=parse_date(e.get("time")))
             g.adj[edge.src].append(edge)
             g.rev[edge.dst].append(edge)
+
+        # build mutiple indexing
+        release = _get_release(g.nodes[nid]) if "_get_release" in globals() else f"{g.nodes[nid].package}:{g.nodes[nid].version}"
+        pkg_l = (g.nodes[nid].package or "").lower()
+        ver_l = (g.nodes[nid].version or "").lower()
+        g.by_pkg[pkg_l].append(g.nodes[nid])
+        if pkg_l and ver_l:
+            g.by_pkg_ver[(pkg_l, ver_l)] = g.nodes[nid]
+        
+        g.release_lc[nid] = (release or "").lower()
+        parts = release.split(":")
+        if len(parts) >= 3:
+            g.by_coords[(parts[0].lower(), parts[1].lower())].append(g.nodes[nid])
+
         return g
 
     def neighbors(self, node_id: str) -> List[Edge]:
@@ -257,55 +289,67 @@ class GTBuilder:
         
         '''
         if isinstance(record, dict):
-            pkgname = self._package(record) or ""
+            pkgname = (self._package(record) or "").lower()
         else:
-            pkgname = str(record)
+            pkgname = str(record).lower()
 
         candidates: List[Node] = []
         coords = None
+
         for af in record.get("affected", []) or []:
             coords = _extract_coordinates_from_osv_pkg(af.get("package") or {})
             if coords.get("group") or coords.get("artifact"):
                 break
         
-        for n in self.g.nodes.values():
-            release = _get_release(n)
-            parts = release.split(":")
-            g = parts[0] if len(parts) >= 3 else None
-            a = parts[1] if len(parts) >= 3 else None
-            # strong match by coords
-            strong_ok = False
-            if coords and coords["artifact"]:
-                if a == coords["artifact"] and (not coords["group"] or g == coords["group"]):
-                    strong_ok = True
+        # 1) strong match: coords: group:artifact
+        if coords and (coords.get("artifact")):
+            g = (coords.get("group") or "").lower()
+            a = (coords.get("artifact") or "").lower()
+            cand = self.g.by_coords.get((g, a), [])
+            if cand:
+                return cand
+        
+        # 2) less strong matchL package name
+        if pkgname:
+            candidates.extend(self.g.by_pkg.get(pkgname, []))
+            if candidates:
+                return candidates
             
-            # weak match by package name
-            weak_ok = False
-            if not strong_ok:
-                simple = (coords["artifact"] or pkgname or "").lower()
-                if simple:
-                    weak_ok = re.search(rf"(^|[:/.-]){re.escape(simple)}($|[:/.-])", release.lower()) is not None
-
-            if strong_ok or weak_ok:
-                candidates.append(n)
+        # 3) regex matching on release_lc
+        if pkgname:
+            for nid, r in self.g.release_lc.items():
+                if pkgname in r:
+                    candidates.append(self.g.nodes[nid])
 
         return candidates
 
     def _match_nodes_by_versions_or_ranges(self, nodes: List[Node], versions_set: Optional[Set[str]], ranges: List[VersionRange]) -> List[Node]:
         if versions_set:
-            vers = set(versions_set)
+            vers_l = {str(SemVer.parse(v) or v).lower() for v in versions_set}
+            fast = []
+            # match (pkg, ver):
+            pkg_l = (self._package(nodes[0] if nodes else {}) or "").lower() if nodes else ""
+            for v in vers_l:
+                n = self.g.by_pkg_ver.get((pkg_l, v))
+                if n:
+                    fast.append(n)
+            if fast:
+                return fast
+            # check inside small candidates
             matched = []
             for n in nodes:
-                sv = SemVer.parse(_get_version(n))
-                if sv and str(sv) in vers:
+                sv = _semver_cached(_get_version(n))
+                if sv and str(sv).lower() in vers_l:
                     matched.append(n)
             if matched:
                 return matched
+
         if not ranges:
             return nodes
+        
         matched = []
         for n in nodes:
-            sv = SemVer.parse(_get_version(n))
+            sv = _semver_cached(_get_version(n))
             if not sv:
                 continue
             if any(r.contains(sv) for r in ranges):
@@ -334,7 +378,9 @@ class GTBuilder:
         )
 
         def ingest(records: List[Dict[str, Any]], source: str):
-            for r in records:
+            total = len(records)
+            last_log = 0
+            for i, r in enumerate(records):
                 # unwrap record
                 r = _unwrap_record(r)
                 cve = _extract_cve_id(r) or r.get("id")
@@ -361,6 +407,10 @@ class GTBuilder:
                     has_git = any((rng.get("type") == "GIT") for af in (r.get("affected") or []) for rng in (af.get("ranges") or []))
                     ev_fields.update({"versions_count": len(versions_set), "has_git_ranges": has_git})
                 bucket["evidence"].append(EvidenceItem(source=source, fields=ev_fields))
+
+                if i - last_log >= 1000:  # print out every 1000
+                    print(f"[{source}] processed {i}/{total} ({i/total:.1%})")
+                    last_log = i
 
         ingest(self.osv, "osv")
         ingest(self.nvd, "nvd")
@@ -390,15 +440,20 @@ class GTBuilder:
                     cve_id=cve, package=pkg, version=version, time_introduced=time_introduced,
                     fix_commits=fix_commits, evidence=ev, confidence=conf
                 ))
+
+        print(f"[GTBuilder] Finished ingest: {len(by_cve)} CVE groups collected.")
+
         return roots
 
-    def build_reference_paths(self, roots: List[RootCause], max_depth: int = 6, time_constrained: bool = True) -> List[ReferencePath]:
+    def build_reference_paths(self, roots: List[RootCause], max_depth: int = 5, time_constrained: bool = True) -> List[ReferencePath]:
         refs: List[ReferencePath] = []
 
         def node_id(pkg: str, ver: str) -> str:
             return f"{pkg}@{ver}"
         
-        for root in roots:
+        for idx, root in enumerate(roots):
+            if idx % 50 == 0:
+                print(f"[RefPaths] {idx}/{len(roots)} roots processed")
             rid = node_id(root.package, root.version) if root.version else None
             if not rid or rid not in self.g.nodes:
                 refs.append(
@@ -514,13 +569,3 @@ if __name__ == "__main__":
     print(f"  Roots    : {(t2 - t1)*1000:.1f} ms")
     print(f"  Paths    : {(t3 - t2)*1000:.1f} ms")
     print(f"  Total    : {(t3 - t0)*1000:.1f} ms")
-
-
-
-
-    
-
-
-
-
-
