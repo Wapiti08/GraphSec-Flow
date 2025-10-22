@@ -274,6 +274,17 @@ def smoke_nvd_jsonl() -> List[Dict[str, Any]]:
                                                                     {'url': 'https://vuldb.com/?ctiid.239358', 'source': 'cna@vuldb.com', 'tags': 
                                                                                                                                                                                                                                                                     ['Permissions Required', 'Third Party Advisory']}, {'url': 'https://vuldb.com/?id.239358', 'source': 'cna@vuldb.com', 'tags': ['Permissions Required', 'Third Party Advisory']}, {'url': 'https://vuldb.com/?submit.204279', 'source': 'cna@vuldb.com'}, {'url': 'https://github.com/cugerQDHJ/cve/blob/main/rce.md', 'source': 'af854a3a-2127-422b-91ae-364da2661108', 'tags': ['Exploit', 'Third Party Advisory']}, {'url': 'https://vuldb.com/?ctiid.239358', 'source': 'af854a3a-2127-422b-91ae-364da2661108', 'tags': ['Permissions Required', 'Third Party Advisory']}, {'url': 'https://vuldb.com/?id.239358', 'source': 'af854a3a-2127-422b-91ae-364da2661108', 'tags': ['Permissions Required', 'Third Party Advisory']}, 
                                                                                                                                                                                                                                                                     {'url': 'https://vuldb.com/?submit.204279', 'source': 'af854a3a-2127-422b-91ae-364da2661108'}]}}]}}]
+def _split_release(release: str):
+    # "group:artifact:version" -> (group, artifact, version)
+    if not release:
+        return None, None, None
+    parts = str(release).split(":")
+    if len(parts) >= 3:
+        return parts[0], parts[1], parts[2]
+    if len(parts) == 2:
+        return None, parts[0], parts[1]
+    return None, None, parts[0] if parts else (None, None, None)
+
 
 def split_cve_meta_to_builder_inputs(cve_meta: Dict[Any, List[Dict[str, Any]]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     """

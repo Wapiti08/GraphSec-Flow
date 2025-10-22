@@ -96,6 +96,7 @@ class ReferencePath:
             "confidence": round(self.confidence, 4),
         }
 
+
 @dataclass
 class Node:
     id: str
@@ -103,11 +104,13 @@ class Node:
     version: str
     time: Optional[datetime] = None
 
+
 @dataclass
 class Edge:
     src: str
     dst: str
     time: Optional[datetime] = None
+
 
 class DepGraph:
     ''' Time-aware directed graph of package dependencies, using adjcency list representation.'''
@@ -211,6 +214,7 @@ class GTBuilder:
         nvd_records: List[Dict[str, Any]],
         prefer_upstream_direction: bool = True,
     ):
+        
         self.g = dep_graph
         self.osv = osv_records or []
         self.nvd = nvd_records or []
@@ -530,7 +534,30 @@ if __name__ == "__main__":
     else:
         if not args.dep_graph:
             ap.error("--dep-graph is required unless --smoke-test is used.")
-        G = _safe_load_pickle(Path(args.dep_graph))
+        loaded_graph = _safe_load_pickle(Path(args.dep_graph))
+
+        # ------- compatible networkx.Digraph -> DepGraph -----
+        if not isinstance(loaded_graph, DepGraph):
+            print("[Loader] Detected networkx.DiGraph, converting to DepGraph...")
+            try:
+                obj = {"nodes": [], "edges": []}
+                for nid, data in loaded_graph.nodes(data=True):
+                    obj["nodes"].append({
+                        "id": nid,
+                        **data
+                    })
+                for src, dst, edata in loaded_graph.edges(data=True):
+                    item = {"src": src, "dst": dst}
+                    if "time" in edata:
+                        item["time"] = edata["time"]
+                    obj["edges"].append(item)
+                G = DepGraph.from_json(obj)
+                print(f"[Loader] Graph converted: {len(G.nodes)} nodes, {sum(len(v) for v in G.adj.values())} edges.")
+            except Exception as e:
+                print(f"[Loader] Conversion failed: {e}")
+                raise
+        else:
+            G = loaded_graph
 
         # If pre-cached meta is provided, split to OSV/nü d for the builder
         if args.cve_meta:
