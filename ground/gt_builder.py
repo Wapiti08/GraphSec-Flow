@@ -24,6 +24,7 @@ from ground.helper import parse_date, iso, infer_pkg_ver_from_release
 from ground.helper import split_cve_meta_to_builder_inputs, _extract_cve_id, _unwrap_record
 from ground.helper import _extract_coordinates_from_osv_pkg
 from ground.helper import _get_release,_get_version,_get_time,_node_key
+from ground.helper import build_release_index, resolve_root_to_node
 import argparse
 import json
 import re
@@ -31,10 +32,11 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Iterable, Set, Any
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from utils.util import read_jsonl, write_jsonl, _safe_load_pickle
 import time
 from cve.cvescore import _osv_extract_fix_commits
 from functools import lru_cache
+from utils.util import read_jsonl, write_jsonl, _safe_load_pickle
+
 
 # --------------------------------
 # Data Models
@@ -110,6 +112,7 @@ class Edge:
     src: str
     dst: str
     time: Optional[datetime] = None
+
 
 
 class DepGraph:
@@ -534,6 +537,7 @@ if __name__ == "__main__":
     else:
         if not args.dep_graph:
             ap.error("--dep-graph is required unless --smoke-test is used.")
+        
         loaded_graph = _safe_load_pickle(Path(args.dep_graph))
 
         # ------- compatible networkx.Digraph -> DepGraph -----
