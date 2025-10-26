@@ -24,7 +24,7 @@ from ground.helper import parse_date, iso, infer_pkg_ver_from_release
 from ground.helper import split_cve_meta_to_builder_inputs, _extract_cve_id, _unwrap_record
 from ground.helper import _extract_coordinates_from_osv_pkg
 from ground.helper import _get_release,_get_version,_get_time,_node_key
-from ground.helper import build_release_index, resolve_root_to_node
+from ground.helper import build_release_index_from_depgraph, resolve_root_to_node
 import argparse
 import json
 import re
@@ -377,6 +377,10 @@ class GTBuilder:
         return min(1.0, 0.2 + 0.5 * w_src + w_fix + w_agree)
 
     def build_root_causes(self) -> List[RootCause]:
+        print("[GTBuilder] Building release index for dependency graph ...")
+        release_index = build_release_index_from_depgraph(self.g)
+        print(f"[GTBuilder] Indexed {len(release_index)} artifacts for mapping.")
+
         by_cve: Dict[str, Dict[str, Any]] = defaultdict(
             lambda: {
                 "packages": defaultdict(lambda: {"nodes": [], "sources": set(), "fix_commits": set(), "evidence": []}),
@@ -432,6 +436,14 @@ class GTBuilder:
 
                 earliest = self._earliest_node(nodes)
 
+                if not earliest:
+                    # search with release_index when not matched
+                    nid, reason = resolve_root_to_node(pkg + "@", release_index)
+                    if nid:
+                        n = self.g.nodes.get(nid)
+                        if n:
+                            earliest = n
+                            print(f"[GTBuilder] Fallback mapped {pkg} -> {nid} ({reason})")
                 time_introduced = iso(earliest.time) if earliest else None
                 fix_commits = sorted(list(item["fix_commits"]))
                 agree = 1.0 if earliest else 0.0
@@ -462,6 +474,15 @@ class GTBuilder:
             if idx % 50 == 0:
                 print(f"[RefPaths] {idx}/{len(roots)} roots processed")
             rid = node_id(root.package, root.version) if root.version else None
+
+            if (not rid or rid not in self.g.nodes):
+                nid, reason = resolve_root_to_node(root.package + "@", build_release_index_from_depgraph(self.g))
+                if nid and nid in self.g.nodes:
+                    rid = nid
+                    reason = f"matched_by_artifact:{root.package}"
+                else:
+                    reason = reason or f"pkg_not_found_in_graph:{root.package}"
+
             if not rid or rid not in self.g.nodes:
                 refs.append(
                     ReferencePath(
@@ -506,8 +527,16 @@ class GTBuilder:
             conf = max(0.0, min(1.0, root.confidence * depth_factor))
 
             ev = [EvidenceItem(source="osv"), EvidenceItem(source="nvd")]
-            refs.append(ReferencePath(cve_id=root.cve_id, root_id=rid, path=edges_accum, evidence=ev, confidence=conf))
-        
+            refs.append(
+                ReferencePath(
+                    cve_id=root.cve_id,
+                    root_id=rid or f"{root.package}@",
+                    path=[],
+                    evidence=[EvidenceItem(source="GTBUILDER", fields={"reason": reason})],
+                    confidence=max(0.0, root.confidence * 0.5)
+                )
+            )        
+            
         return refs
 
 if __name__ == "__main__":
@@ -562,6 +591,10 @@ if __name__ == "__main__":
                 raise
         else:
             G = loaded_graph
+        
+        print("Building release index ...")
+        release_index = build_release_index_from_depgraph(G)
+
 
         # If pre-cached meta is provided, split to OSV/nü d for the builder
         if args.cve_meta:

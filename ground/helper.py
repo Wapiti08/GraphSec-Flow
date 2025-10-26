@@ -353,32 +353,44 @@ def split_cve_meta_to_builder_inputs(cve_meta: Dict[Any, List[Dict[str, Any]]]) 
     return osv_records, nvd_records
 
 
-def build_release_index(G):
+def build_release_index_from_depgraph(G):
+    """
+    Build a mapping from artifact name (e.g., 'tomcat') to a list of
+    (node_id, release, timestamp), sorted by timestamp.
+    """
     idx = {}
-    for nid, attrs in G.nodes(data=True):
-        rel = attrs.get("release")
-        # Marven format here
-        if not rel or rel.count(":") < 2:
+
+    for nid, node in G.nodes.items():
+        # construct release string like: group:artifact:version
+        release = f"{node.package}:{node.version}" if ":" in node.package else node.package
+        release = getattr(node, "release", release)  # use actual release if available
+
+        if not release or release.count(":") < 2:
             continue
-        parts = rel.split(":")
-        artifacts = parts[1].lower()
-        # build index like:     
-        # "tomcat": ["org.apache.tomcat:tomcat:9.0.82", "org.apache.tomcat:tomcat:10.1.8"],
-        idx.setdefault(artifacts, []).append((nid, rel, attrs.get("timestamp")))
-    for k in idx:
-        idx[k].sort(key=lambda x: x[2] or 0)
+
+        parts = release.split(":")
+        artifact = parts[1].lower()
+        ts = node.time.timestamp() if node.time else 0
+
+        idx.setdefault(artifact, []).append((nid, release, ts))
+
+    # sort each artifact list by timestamp ascending
+    for artifact in idx:
+        idx[artifact].sort(key=lambda x: x[2])
+
     return idx
 
-def resolve_root_to_node(root_id: str, release_index):
-    ''' check the values of root_id, if there are multiple values,
-    choose the one with earliest timestamp
-    
-    '''
+
+def resolve_root_to_node(root_id: str, release_index: dict):
+    """
+    Given a root_id (like 'tomcat'), find the earliest version node.
+    """
     pkg = root_id.strip("@").lower()
     cands = release_index.get(pkg)
     if not cands:
         return None, f"pkg_not_found_in_graph: {pkg}"
-    # choose earliest version
+
+    # pick earliest timestamp
     nid, rel, ts = cands[0]
     return nid, f"matched_by_artifact: {pkg}"
 
