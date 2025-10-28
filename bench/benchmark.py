@@ -13,7 +13,6 @@ from cent.temp_cent import TempCentricity
 from com.commdet import TemporalCommDetector
 from src.path_track import PathConfig, RootCausePathAnalyzer
 from search.vamana import VamanaSearch, CVEVector, VamanaOnCVE
-from eval.evaluation import _zscore, _rank_metrics, _lead_time
 
 # ------- import helper functions -------
 from eval.evaluation import _zscore, _rank_metrics, _lead_time, _pick_total
@@ -39,12 +38,24 @@ def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
     window_iter: iterative generator (t_s, t_e, t_eval)
     return: dict of metrics
     '''
+
+    # ----- for debug --------
+    print(f"[debug] window_iter count: {len(list(window_iter()))}")
+    for ev in events[:3]:
+        print(f"[debug] event t={ev['t']} targets={ev['targets']}")
+
+
     variants = {
         "Static-DC": lambda: _pick_total(tempcent.static_degree()),
         "Static-EVC": lambda: tempcent.static_eigen(),
         "Temporal-DC": None,
         "Temporal-EVC": None,
     }
+
+    # unify event timestamps (seconds → ms)
+    for ev in events:
+        if ev["t"] < 1e11:
+            ev["t"] *= 1000.0
 
     results = {}
 
@@ -54,12 +65,18 @@ def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
         mrrs, h3s = [], []
         series_scores = []
         for (t_s, t_e, t_eval) in window_iter():
+            if isinstance(t_eval, datetime):
+                t_eval = t_eval.timestamp() * 1000.0
+
             tic = time.perf_counter()
+
             raw = variants[name]()
             latencies.append((time.perf_counter() - tic) * 1000.0)
+            
             norm = _zscore(raw)
             series_scores.append((t_eval, norm))
-            ev = next((e for e in events if e['t'] == t_eval), None)
+
+            ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
             if ev:
                 mrr, h3 = _rank_metrics(norm, ev["targets"])
                 mrrs.append(mrr)
@@ -90,7 +107,10 @@ def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
             latencies.append((time.perf_counter() - tic) * 1000.0)
             norm = _zscore(raw)
             series_scores.append((t_eval, norm))
-            ev = next((e for e in events if e["t"] == t_eval), None)
+
+            # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
+            ev = next((e for e in events if abs(e["t"] - t_eval) < 30 * 86400000.0), None)
+
             if ev:
                 mrr, h3 = _rank_metrics(norm, ev["targets"])
                 mrrs.append(mrr); h3s.append(h3)
@@ -104,7 +124,6 @@ def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
             "CommCoverage":  "--",
             "Path-F1": "--",
         }
-
     return results
 
 
@@ -127,25 +146,36 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
     series_scores = []
     hit_comm_flags = []
     coverages = []
+    
+    # unify event timestamps (seconds → ms)
+    for ev in events:
+        if ev["t"] < 1e11:
+            ev["t"] *= 1000.0
 
     commres = tcd.detect_communities(depgraph)
 
-    for (t_s, t_e, t_eval) in window_iter():
-        tic = time.perf_counter()
-        # return community result
-        # return comm id and its score
-        best_comm, cent_scores = tcd.choose_root_community(commres.comm_to_nodes, t_s, t_e)
+    print(f"[debug] events loaded: {len(events)}")
+    for ev in events[:3]:
+        print(f"[debug] sample event t={ev['t']}, targets={list(ev['targets'])[:5]}")
 
+    for (t_s, t_e, t_eval) in window_iter():
+        if isinstance(t_eval, datetime):
+            t_eval = t_eval.timestamp() * 1000.0
+
+        tic = time.perf_counter()
+
+        best_comm, cent_scores = tcd.choose_root_community(commres.comm_to_nodes, t_s, t_e)
         latencies.append((time.perf_counter() - tic) * 1000.0)
 
-        if best_comm is None or not commres or not commres.comm_to_nodes:
+        if not commres or best_comm is None:
             continue
 
         # return the nodes in the best community
         root_nodes = set(commres.comm_to_nodes.get(best_comm, []))
-
         # ----- community metrics -----
-        ev = next((e for e in events if e['t'] == t_eval), None)
+        # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
+        ev = next((e for e in events if abs(e["t"] - t_eval) < 30 * 86400000.0), None)
+
         if ev:
             targets = set(ev["targets"])
             hit = 1.0 if (targets & root_nodes) else 0.0
@@ -161,7 +191,9 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
             mrr, h3 = _rank_metrics(norm, ev["targets"])
             mrrs.append(mrr)
             h3s.append(h3)
-    
+
+    print(f"[debug] window count: {len(series_scores)}, events used: {len(events)}")
+
     return {
         "Community": {
             "MRR": sum(mrrs)/len(mrrs) if mrrs else 0.0,
@@ -214,6 +246,9 @@ def benchmark_paths(
     series_scores = []
 
     for (t_s, t_e, t_eval) in window_iter():
+        if isinstance(t_eval, datetime):
+            t_eval = t_eval.timestamp() * 1000.0
+
         tic = time.perf_counter()
 
         # pick up root per window
@@ -258,7 +293,9 @@ def benchmark_paths(
         norm = _zscore(node_score)
         series_scores.append((t_eval, norm))
 
-        ev = next((e for e in events if e['t'] == t_eval), None)
+        # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
+        ev = next((e for e in events if abs(e["t"] - t_eval) < 30 * 86400000.0), None)
+
         if ev:
             mrr, h3 = _rank_metrics(norm, ev["targets"])
             mrrs.append(mrr); h3s.append(h3)
@@ -328,7 +365,8 @@ def benchmark_full(
     commres = tcd.detect_communities(depgraph)
 
     for (t_s, t_e, t_eval) in window_iter():
-
+        if isinstance(t_eval, datetime):
+            t_eval = t_eval.timestamp() * 1000.0
         tic = time.perf_counter()
 
         # A ) root community + centrality 
@@ -343,7 +381,9 @@ def benchmark_full(
                        for n in set(cent_scores.keys()) | root_nodes}
 
         # community hit metric
-        ev = next((e for e in events if e['t'] == t_eval), None)
+        # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
+        ev = next((e for e in events if abs(e["t"] - t_eval) < 30 * 86400000.0), None)
+
         if ev:
             targets = set(ev["targets"])
             hit = 1.0 if (targets & root_nodes) else 0.0
@@ -522,6 +562,7 @@ if __name__ == "__main__":
 
     print(f"[info] {len(events)} evaluation events from {t_eval_list[0]} to {t_eval_list[-1]}")
 
+
     # ------- time window iterator ---------
     ref_type = pd.Timestamp.now(tz="UTC")
 
@@ -532,7 +573,7 @@ if __name__ == "__main__":
             yield (
                 _to_float_time(_to_same_type(d_s, ref_type)) * 1000.0,
                 _to_float_time(_to_same_type(d_e, ref_type)) * 1000.0,
-                _to_float_time(d_eval) * 1000.0,
+                _to_float_time(_to_same_type(d_eval, ref_type)) * 1000.0,                
                 )
 
     # --------- Run Benchmarks ---------

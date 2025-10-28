@@ -110,6 +110,7 @@ class TemporalCommDetector:
         min_ts = min(self.timestamps.get(n, float("inf")) for n in nodes)
         return cve_sum + cent_sum - min_ts
     
+    
     def timestamp_of(self, nid):
         data = self.dep_graph.nodes.get(nid, {})
         ts = data.get("timestamp")

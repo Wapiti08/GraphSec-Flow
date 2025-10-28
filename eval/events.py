@@ -60,12 +60,16 @@ def _to_same_type(t, ref_type):
     return t 
 
 def _to_float_time(t):
+    """Convert time (datetime/date/int/float) → float timestamp (seconds)."""
     if isinstance(t, datetime):
         return t.timestamp()
     elif isinstance(t, date):
-        return time.mktime(t.timetuple())
-    else:
+        # convert date to datetime midnight
+        return datetime.combine(t, datetime.min.time()).timestamp()
+    elif isinstance(t, (int, float)):
         return float(t)
+    else:
+        return 0.0
 
 # ------------ generate events according to earliest timestamp --------------
 def build_events_from_vamana_meta(

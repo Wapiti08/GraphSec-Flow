@@ -307,7 +307,6 @@ def recommend_window_params(
                 time_series_per_candidate.append(s_c)
                 time_stamps_per_candidate.append(t_c)
     
-
     # 4) score and pick best
     scores = score_candidates(candidates, time_series_per_candidate, time_stamps_per_candidate, beta=beta)
     if not scores:

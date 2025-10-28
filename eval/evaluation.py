@@ -50,27 +50,38 @@ def _lead_time(series_scores, events, thresh=1.0):
         series_scores: [(t_eval, {node: zscore})...]
     '''
     from collections import defaultdict
-    # save node -> (t,zscore)
+
     node2ts = defaultdict(list)
 
+    # flatten series
     for t, sc in series_scores:
         for n, v in sc.items():
-            node2ts[n].append((t, v))
+            node2ts[n].append((float(t), v))
     
     leads = []
 
     for ev in events:
-        te = ev['t']
-        for n in ev["targets"]:
+        te = float(ev.get("t", 0))
+        if te < 1e11:  # less than year ~5138, i.e. seconds
+            te *= 1000.0
+
+        for n in ev.get("targets", []):
             first = None
             for t, v in node2ts.get(n, []):
+                # convert t to ms if in seconds
+                if t < 1e11:
+                    t *= 1000.0
                 if v >= thresh:
                     first = t
                     break
             if first is not None:
-                leads.append(te - first)
-    
-    return sum(leads)/len(leads) if leads else 0.0
+                delta_days = (te - first) / 86400000.0  # ms to days
+                if abs(delta_days) < 36500:  # sanity check (<100 years)
+                    leads.append(delta_days)
+                else:
+                    print(f"[warn] Suspicious LeadTime: te={te}, t={first}, Δ={delta_days}")
+
+    return sum(leads) / len(leads) if leads else 0.0
     
 
     

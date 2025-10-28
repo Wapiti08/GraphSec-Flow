@@ -361,36 +361,66 @@ def build_release_index_from_depgraph(G):
     idx = {}
 
     for nid, node in G.nodes.items():
-        # construct release string like: group:artifact:version
-        release = f"{node.package}:{node.version}" if ":" in node.package else node.package
-        release = getattr(node, "release", release)  # use actual release if available
+        # handle both dict-like and object-like nodes
+        attrs = getattr(node, "__dict__", node) if not isinstance(node, dict) else node
 
-        if not release or release.count(":") < 2:
+        # try to extract release string
+        release = attrs.get("release")
+        if not release:
+            pkg = attrs.get("package") or attrs.get("group")
+            ver = attrs.get("version")
+            if pkg and ver:
+                release = f"{pkg}:{ver}"
+            else:
+                continue
+        
+        # standardize
+        release = str(release).strip()
+        if release.count(":") < 2:
             continue
-
+        
         parts = release.split(":")
+        group = parts[0].lower()
         artifact = parts[1].lower()
+        key = f"{group}:{artifact}"  # use full identity for uniqueness
+
         ts = node.time.timestamp() if node.time else 0
 
-        idx.setdefault(artifact, []).append((nid, release, ts))
+        idx.setdefault(key, []).append((nid, release, ts))
 
     # sort each artifact list by timestamp ascending
-    for artifact in idx:
-        idx[artifact].sort(key=lambda x: x[2])
+    for k in idx:
+        idx[k].sort(key=lambda x: x[2] or 0)
 
     return idx
 
 
-def resolve_root_to_node(root_id: str, release_index: dict):
+def resolve_root_to_node(root_id: str, release_index: dict, G=None):
     """
     Given a root_id (like 'tomcat'), find the earliest version node.
     """
     pkg = root_id.strip("@").lower()
     cands = release_index.get(pkg)
     if not cands:
+        # try fuzzy match (substring or partial)
+        for k in release_index:
+            if k.endswith(f":{pkg}") or pkg in k:
+                cands = release_index[k]
+                break
+
+    if not cands:
         return None, f"pkg_not_found_in_graph: {pkg}"
 
+    # filter out individual nodes
+    if G is not None:
+        cands = [(nid, rel, ts) for nid, rel, ts in cands if nid in G and (G.out_degree(nid) > 0 or G.in_degree(nid) > 0)]
+    
+    if not cands:
+        return None, f"no_connected_node_found_for:{pkg}"
+
     # pick earliest timestamp
+    cands.sort(key=lambda x: x[2] or 0)
     nid, rel, ts = cands[0]
+
     return nid, f"matched_by_artifact: {pkg}"
 
