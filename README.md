@@ -94,7 +94,7 @@ python3 path_track.py --aug_graph /workspace/GraphSec-Flow/data/dep_graph_cve.pk
 
 - Benchmark
 ```
-nohup python3 benchmark.py > bench.txt 2>&1 &
+python3 benchmark.py   --ref /workspace/GraphSec-Flow/data/ref_paths.jsonl   --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl --root /workspace/GraphSec-Flow/data/root_causes.jsonl
 ```
 
 

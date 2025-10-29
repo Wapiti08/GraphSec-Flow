@@ -25,6 +25,7 @@ from ground.helper import split_cve_meta_to_builder_inputs, _extract_cve_id, _un
 from ground.helper import _extract_coordinates_from_osv_pkg
 from ground.helper import _get_release,_get_version,_get_time,_node_key
 from ground.helper import build_release_index_from_depgraph, resolve_root_to_node
+from depdata.ana_fam_merge import debug_families
 import argparse
 import json
 import re
@@ -539,6 +540,7 @@ class GTBuilder:
             
         return refs
 
+
 if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="Ground-truth-like reference constructor for vulnerability diffusion studies.")
@@ -595,6 +597,17 @@ if __name__ == "__main__":
         print("Building release index ...")
         release_index = build_release_index_from_depgraph(G)
 
+        import os
+        FAMILY_MODE = os.environ.get("FAMILY_MODE", "0") == "1"
+
+        if FAMILY_MODE:
+            print("[GTBUILDER] Running in FAMILY MODE")
+            release_index = build_release_index_from_depgraph(G)
+            debug_families(release_index, topn=10)
+            ref_out_path = os.path.join(args.out_root, "ref_paths_family.jsonl")
+        else:
+            print("[GTBUILDER] Running in NORMAL MODE")
+            ref_out_path = os.path.join(args.out_paths, "ref_paths.jsonl")
 
         # If pre-cached meta is provided, split to OSV/nü d for the builder
         if args.cve_meta:
@@ -618,6 +631,7 @@ if __name__ == "__main__":
         roots=roots, max_depth=args.max_depth, time_constrained=not args.no_time_constraint
     )
     t3 = time.time()
+
 
     # -------- Write outputs ----------
     write_jsonl(args.out_root, (r.to_json() for r in roots))

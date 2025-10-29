@@ -146,19 +146,18 @@ if __name__ == "__main__":
           f"(took {time.perf_counter() - t0:.2f}s)")
     
     # ---------- for quick debug ------------
-    import random
-    MAX_NODES = 1000  
-    if depgraph.number_of_nodes() > MAX_NODES:
-        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-        # random sampling
-        if len(valid_nodes) < MAX_NODES:
-            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-            keep = valid_nodes
-        else:
-            keep = random.sample(valid_nodes, MAX_NODES)
-        depgraph = depgraph.subgraph(keep).copy()
-        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
-
+    # import random
+    # MAX_NODES = 1000  
+    # if depgraph.number_of_nodes() > MAX_NODES:
+    #     valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+    #     # random sampling
+    #     if len(valid_nodes) < MAX_NODES:
+    #         print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+    #         keep = valid_nodes
+    #     else:
+    #         keep = random.sample(valid_nodes, MAX_NODES)
+    #     depgraph = depgraph.subgraph(keep).copy()
+    #     print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
     # ---------------------------------------
 
     # initialize tempcentricity

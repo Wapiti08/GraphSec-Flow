@@ -353,6 +353,20 @@ def split_cve_meta_to_builder_inputs(cve_meta: Dict[Any, List[Dict[str, Any]]]) 
     return osv_records, nvd_records
 
 
+def _family_key(group: str, artifact: str) -> str:
+    """
+    Normalize and merge related artifacts under one family name.
+    Example:
+        org.apache.tomcat.embed:tomcat-embed-core -> tomcat
+        org.springframework.boot:spring-boot-starter-web -> spring
+        org.apache.hadoop:hadoop-common -> hadoop
+    """
+    # prioritize artifact name
+    base = artifact.lower()
+    
+
+
+
 def build_release_index_from_depgraph(G):
     """
     Build a mapping from artifact name (e.g., 'tomcat') to a list of

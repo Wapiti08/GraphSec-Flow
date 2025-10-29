@@ -3,6 +3,7 @@
  # @ Modified time: 2025-10-02 17:32:13
  # @ Description: benchmark for different component settng ups
  '''
+import json
 import sys
 from pathlib import Path
 sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
@@ -27,7 +28,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from bench.helper import load_cached_scores, _safe_node_timestamps, _mask_or_fill, _f1_from_paths
 import bisect
-
+import argparse
 
 import random
 random.seed(0)
@@ -219,7 +220,8 @@ def benchmark_paths(
         beta: float = 0.0,
         gamma: float = 0.0,
         k_paths: int = 5,
-        strict_increase: bool=False
+        strict_increase: bool=False,
+        candidates: list=None,
     ):
     ''' 
     automatically identify root source, construct temporal graph and weight edges,
@@ -469,7 +471,53 @@ def pick_root_in_window(cands_sorted, t_s_ms, t_e_ms):
 
     return None
 
-if __name__ == "__main__":
+def load_ground_truth(args):
+    """
+    Load ground truth ref_paths and root_causes (normal + family)
+    """
+    from utils.util import read_jsonl
+    gt_normal, gt_family = [], []
+    if args.ref:
+        gt_normal = read_jsonl(args.ref)
+    if args.ref_family:
+        gt_family = read_jsonl(args.ref_family)
+    if not gt_family and not gt_normal:
+        print("[WARN] No ground truth ref_paths provided. Skip GT evaluation.")
+        return None, None
+
+    def summarize_ref_paths(data, label):
+        total = len(data)
+        nonempty = sum(1 for r in data if r.get("path"))
+        ratio = round(nonempty / total, 4) if total else 0
+        print(f"[GroundTruth] {label}: total={total}, nonempty={nonempty}, ratio={ratio}")
+        return ratio
+
+    if gt_family:
+        summarize_ref_paths(gt_family, "family version")
+    if gt_normal:
+        summarize_ref_paths(gt_normal, "normal version")
+
+    return gt_normal, gt_family
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Benchmark with optional ground truth")
+    parser.add_argument("--ref", type=str, help="Path to ref_paths.jsonl", default=None)
+    parser.add_argument("--ref-family", type=str, help="Path to ref_paths_family.jsonl", default=None)
+    parser.add_argument("--root", type=str, help="Path to root_causes.jsonl", default=None)
+    parser.add_argument("--pred", type=str, help="Optional path to model predicted paths (json)", default=None)
+
+    args, unknown = parser.parse_known_args()
+    
+    print("\n=== [1] Loading Ground Truth ===")
+    gt_normal, gt_family = load_ground_truth(args)
+
+    # Load predicted paths if available
+    predicted_paths = None
+    if args.pred and Path(args.pred).exists():
+        print(f"[Predictions] Loading predicted paths from {args.pred}")
+        with open(args.pred, "r", encoding="utf-8") as f:
+            predicted_paths = json.load(f)
 
     data_dir = Path.cwd().parent.joinpath("data")
 
@@ -487,17 +535,17 @@ if __name__ == "__main__":
         depgraph = pickle.load(f)
 
     # ----------- for quick test ---------
-    # MAX_NODES = 1000  
-    # if depgraph.number_of_nodes() > MAX_NODES:
-    #     valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-    #     # random sampling
-    #     if len(valid_nodes) < MAX_NODES:
-    #         print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-    #         keep = valid_nodes
-    #     else:
-    #         keep = random.sample(valid_nodes, MAX_NODES)
-    #     depgraph = depgraph.subgraph(keep).copy()
-    #     print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+    MAX_NODES = 1000  
+    if depgraph.number_of_nodes() > MAX_NODES:
+        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+        # random sampling
+        if len(valid_nodes) < MAX_NODES:
+            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+            keep = valid_nodes
+        else:
+            keep = random.sample(valid_nodes, MAX_NODES)
+        depgraph = depgraph.subgraph(keep).copy()
+        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
 
     # -------------- candiate ---------------
     candidates = []
@@ -597,7 +645,7 @@ if __name__ == "__main__":
 
     # path & full
     pathm = benchmark_paths(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
-                            k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False)
+                            k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, candidates=candidates)
     all_metrics.update(pathm)
     print("[info] Path benchmark done")
     print("current metrics:", all_metrics)
@@ -607,3 +655,32 @@ if __name__ == "__main__":
     all_metrics.update(fullm)
 
     print(all_metrics)
+
+    if predicted_paths:
+        print("\n=== [3] Evaluating Predictions vs Ground Truth ===")
+
+        def collect_targets(gt_data):
+            targets = set()
+            for item in gt_data:
+                for p in item.get("path", []):
+                    targets.update(p)
+            return targets
+
+        if gt_family:
+            gt_targets = collect_targets(gt_family)
+            f1_fam = _f1_from_paths(predicted_paths, gt_targets)
+            print(f"[Eval] F1 vs FAMILY ground truth = {f1_fam:.3f}")
+
+        if gt_normal:
+            gt_targets = collect_targets(gt_normal)
+            f1_norm = _f1_from_paths(predicted_paths, gt_targets)
+            print(f"[Eval] F1 vs NORMAL ground truth = {f1_norm:.3f}")
+
+    print("\n=== [4] Benchmark Completed ===")
+
+
+# ============================================================
+# --- Entry Point ---
+# ============================================================
+if __name__ == "__main__":
+    main()
