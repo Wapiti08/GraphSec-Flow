@@ -26,6 +26,7 @@ from ground.helper import _extract_coordinates_from_osv_pkg
 from ground.helper import _get_release,_get_version,_get_time,_node_key
 from ground.helper import build_release_index_from_depgraph, resolve_root_to_node
 from depdata.ana_fam_merge import debug_families
+from ground.fuzzy_search import layer_based_search
 import argparse
 import json
 import re
@@ -208,7 +209,9 @@ class DepGraph:
 
     def reverse_neighbors(self, node_id: str) -> List[Edge]:
         return self.rev.get(node_id, [])
-    
+
+
+
 
 class GTBuilder:
     def __init__(
@@ -540,7 +543,6 @@ class GTBuilder:
             
         return refs
 
-
 if __name__ == "__main__":
 
     ap = argparse.ArgumentParser(description="Ground-truth-like reference constructor for vulnerability diffusion studies.")
@@ -632,6 +634,29 @@ if __name__ == "__main__":
     )
     t3 = time.time()
 
+    # ------------ Layer_Mode: approximate fallback ----------------
+    LAYER_MODE = os.environ.get("LAYER_MODE", "0") == "1"
+    if LAYER_MODE:
+        print("[GTBUILDER] Running in LAYER MODE")
+        approx = []
+        for i, root in enumerate(roots):
+            cand = layer_based_search(builder.g, f"{root.package}@{root.version}", builder.osv + builder.nvd, family_index=release_index)
+            if cand:
+                approx.extend(cand)
+        print(f"[LAYER] Found {len(approx)} approximate paths.")
+        # merge with existing paths
+        paths.extend([
+            ReferencePath(
+                cve_id=c["match"],
+                root_id=c["root"],
+                path=[PathEdge(src=s, dst=d) for s, d in zip(c["path"][:-1], c["path"][1:])],
+                evidence=[EvidenceItem(source="LAYER_MODE", fields={"distance": c["distance"]})],
+                confidence=0.3,
+            )
+            for c in approx
+        ])
+        # override output filename
+        ref_out_path = ref_out_path.replace(".jsonl", "_layer.jsonl")
 
     # -------- Write outputs ----------
     write_jsonl(args.out_root, (r.to_json() for r in roots))
