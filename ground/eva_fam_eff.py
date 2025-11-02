@@ -112,6 +112,7 @@ if __name__ == "__main__":
             "--cve-meta", cve_meta_path,
             "--out-root", root_path_layer,
             "--out-paths", ref_path_layer,
+            # "--smoke-test",
         ],
         check=True,
         env=env_layer

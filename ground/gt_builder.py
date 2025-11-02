@@ -38,7 +38,7 @@ import time
 from cve.cvescore import _osv_extract_fix_commits
 from functools import lru_cache
 from utils.util import read_jsonl, write_jsonl, _safe_load_pickle
-
+import os
 
 # --------------------------------
 # Data Models
@@ -209,8 +209,6 @@ class DepGraph:
 
     def reverse_neighbors(self, node_id: str) -> List[Edge]:
         return self.rev.get(node_id, [])
-
-
 
 
 class GTBuilder:
@@ -543,132 +541,213 @@ class GTBuilder:
             
         return refs
 
+def _norm_pkg(s: str) -> str:
+    s = (s or "").lower().strip()
+    for suf in ("-core", "-parent", "-service", "-lib"):
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+    return s
+
+def _build_pkg_index(G):
+    full2ids, art2ids = {}, {}
+    for nid, node in G.nodes.items():
+        pkg_full = _norm_pkg(getattr(node, "package", "") or "")
+        if not pkg_full:
+            continue
+        art = pkg_full.split(":")[-1]
+        full2ids.setdefault(pkg_full, set()).add(nid)
+        art2ids.setdefault(art, set()).add(nid)
+    return full2ids, art2ids
+
+def _resolve_root_ids(root_pkg: str, full2ids, art2ids):
+    p = _norm_pkg(root_pkg)
+    if p in full2ids:
+        return list(full2ids[p])
+    art = p.split(":")[-1]
+    return list(art2ids.get(art, []))
+
 if __name__ == "__main__":
 
-    ap = argparse.ArgumentParser(description="Ground-truth-like reference constructor for vulnerability diffusion studies.")
+    # ---- Argument parsing ----
+    ap = argparse.ArgumentParser(
+        description="Ground-truth-like reference constructor for vulnerability diffusion studies."
+    )
     ap.add_argument("--dep-graph", required=True)
-    ap.add_argument("--cve-meta", required=False, default=None, help="Pre-cached mixed CVE metadata (JSONL): each line has {'source': 'osv'|'nvd', 'data': {...}}")
-    # keep smoke-test for quick sanity checks
-    ap.add_argument("--smoke-test", action="store_true", help="Run an in-memory example (ignores file inputs)")
-
+    ap.add_argument("--cve-meta", default=None,
+                    help="Pre-cached mixed CVE metadata (JSONL): each line has {'source': 'osv'|'nvd', 'data': {...}}")
+    ap.add_argument("--smoke-test", action="store_true",
+                    help="Run an in-memory example (ignores file inputs)")
     ap.add_argument("--out-root", required=True)
     ap.add_argument("--out-paths", required=True)
     ap.add_argument("--downstream", action="store_true")
     ap.add_argument("--max-depth", type=int, default=6)
     ap.add_argument("--no-time-constraint", action="store_true")
-
     args = ap.parse_args()
+
     t0 = time.time()
 
-    # ---- load inputs ---------
+    # =====================================================
+    # 1. Load dependency graph and CVE metadata
+    # =====================================================
     if args.smoke_test:
+        print("[Mode] Running smoke test...")
         g_obj = smoke_dep_graph()
-        osv = smoke_osv_jsonl()
-        nvd = smoke_nvd_jsonl()
         G = DepGraph.from_json(g_obj)
+        osv_records, nvd_records = smoke_osv_jsonl(), smoke_nvd_jsonl()
 
     else:
         if not args.dep_graph:
             ap.error("--dep-graph is required unless --smoke-test is used.")
-        
+
         loaded_graph = _safe_load_pickle(Path(args.dep_graph))
 
-        # ------- compatible networkx.Digraph -> DepGraph -----
+        # --- Ensure type compatibility ---
         if not isinstance(loaded_graph, DepGraph):
             print("[Loader] Detected networkx.DiGraph, converting to DepGraph...")
             try:
                 obj = {"nodes": [], "edges": []}
                 for nid, data in loaded_graph.nodes(data=True):
-                    obj["nodes"].append({
-                        "id": nid,
-                        **data
-                    })
+                    obj["nodes"].append({"id": nid, **data})
                 for src, dst, edata in loaded_graph.edges(data=True):
-                    item = {"src": src, "dst": dst}
+                    edge = {"src": src, "dst": dst}
                     if "time" in edata:
-                        item["time"] = edata["time"]
-                    obj["edges"].append(item)
+                        edge["time"] = edata["time"]
+                    obj["edges"].append(edge)
                 G = DepGraph.from_json(obj)
-                print(f"[Loader] Graph converted: {len(G.nodes)} nodes, {sum(len(v) for v in G.adj.values())} edges.")
+                print(f"[Loader] Converted: {len(G.nodes)} nodes, {sum(len(v) for v in G.adj.values())} edges.")
             except Exception as e:
-                print(f"[Loader] Conversion failed: {e}")
-                raise
+                raise RuntimeError(f"[Loader] Conversion failed: {e}")
         else:
             G = loaded_graph
-        
-        print("Building release index ...")
+
+        print("[Info] Building release index...")
         release_index = build_release_index_from_depgraph(G)
 
-        import os
-        FAMILY_MODE = os.environ.get("FAMILY_MODE", "0") == "1"
-
-        if FAMILY_MODE:
-            print("[GTBUILDER] Running in FAMILY MODE")
-            release_index = build_release_index_from_depgraph(G)
-            debug_families(release_index, topn=10)
-            ref_out_path = os.path.join(args.out_root, "ref_paths_family.jsonl")
-        else:
-            print("[GTBUILDER] Running in NORMAL MODE")
-            ref_out_path = os.path.join(args.out_paths, "ref_paths.jsonl")
-
-        # If pre-cached meta is provided, split to OSV/nü d for the builder
+        # --- Load CVE metadata ---
         if args.cve_meta:
             cve_meta = _safe_load_pickle(Path(args.cve_meta))
             osv_records, nvd_records = split_cve_meta_to_builder_inputs(cve_meta)
         else:
             osv_records, nvd_records = [], []
 
-    # ---- Build roots & paths -------
-    builder = GTBuilder(
-        dep_graph=G,
-        osv_records=osv_records,
-        nvd_records=nvd_records,
-        prefer_upstream_direction=not args.downstream
-    )
-
-    t1 = time.time()
-    roots = builder.build_root_causes()
-    t2 = time.time()
-    paths = builder.build_reference_paths(
-        roots=roots, max_depth=args.max_depth, time_constrained=not args.no_time_constraint
-    )
-    t3 = time.time()
-
-    # ------------ Layer_Mode: approximate fallback ----------------
+    # =====================================================
+    # 2. Mode selection
+    # =====================================================
+    FAMILY_MODE = os.environ.get("FAMILY_MODE", "0") == "1"
     LAYER_MODE = os.environ.get("LAYER_MODE", "0") == "1"
-    if LAYER_MODE:
-        print("[GTBUILDER] Running in LAYER MODE")
-        approx = []
-        for i, root in enumerate(roots):
-            cand = layer_based_search(builder.g, f"{root.package}@{root.version}", builder.osv + builder.nvd, family_index=release_index)
-            if cand:
-                approx.extend(cand)
-        print(f"[LAYER] Found {len(approx)} approximate paths.")
-        # merge with existing paths
-        paths.extend([
-            ReferencePath(
-                cve_id=c["match"],
-                root_id=c["root"],
-                path=[PathEdge(src=s, dst=d) for s, d in zip(c["path"][:-1], c["path"][1:])],
-                evidence=[EvidenceItem(source="LAYER_MODE", fields={"distance": c["distance"]})],
-                confidence=0.3,
-            )
-            for c in approx
-        ])
-        # override output filename
-        ref_out_path = ref_out_path.replace(".jsonl", "_layer.jsonl")
 
-    # -------- Write outputs ----------
+    # =====================================================
+    # 3A. FAMILY MODE
+    # =====================================================
+    if FAMILY_MODE:
+        print("[GTBUILDER] Running in FAMILY MODE")
+        release_index = build_release_index_from_depgraph(G)
+        debug_families(release_index, topn=10)
+
+        builder = GTBuilder(
+            dep_graph=G,
+            osv_records=osv_records,
+            nvd_records=nvd_records,
+            prefer_upstream_direction=not args.downstream
+        )
+
+        roots = builder.build_root_causes()
+        paths = builder.build_reference_paths(
+            roots=roots,
+            max_depth=args.max_depth,
+            time_constrained=not args.no_time_constraint
+        )
+        ref_out_path = os.path.join(args.out_root, "ref_paths_family.jsonl")
+
+    # =====================================================
+    # 3B. LAYER MODE (now standalone)
+    # =====================================================
+    elif LAYER_MODE:
+        print("[GTBUILDER] Running in LAYER MODE (standalone)")
+        release_index = build_release_index_from_depgraph(G)
+        builder = GTBuilder(
+            dep_graph=G,
+            osv_records=osv_records,
+            nvd_records=nvd_records,
+            prefer_upstream_direction=not args.downstream
+        )
+
+        full2ids, art2ids = _build_pkg_index(builder.g)
+
+        roots = builder.build_root_causes()
+
+        print("Total roots:", len(roots))
+
+        mapped_count = 0
+        for r in roots:
+            if _resolve_root_ids(r.package, full2ids, art2ids):
+                mapped_count += 1
+        print("Roots with resolvable node IDs:", mapped_count)
+
+        # ---------- run layer search from resolved node IDs ----------
+        approx_paths = []
+
+        for root in roots:
+            start_nodes = _resolve_root_ids(root.package, full2ids, art2ids)
+            if not start_nodes:
+                print(f"[LAYER] skip root (unmapped): {root.package}")
+                continue
+            for start_id in start_nodes:
+                candidates = layer_based_search(
+                    builder.g,
+                    start_id,
+                    builder.osv + builder.nvd,
+                    family_index=release_index
+                )
+                if candidates:
+                    approx_paths.extend([
+                        ReferencePath(
+                            cve_id=c["match"],
+                            root_id=c["root"],
+                            path=[PathEdge(src=s, dst=d) for s, d in zip(c["path"][:-1], c["path"][1:])],
+                            evidence=[EvidenceItem(source="LAYER_MODE", fields={"distance": c["distance"]})],
+                            confidence=0.3,
+                        )
+                        for c in candidates
+                    ])
+
+        print(f"[LAYER] Found {len(approx_paths)} approximate paths.")
+        paths = approx_paths
+        ref_out_path = os.path.join(args.out_root, "ref_paths_layer.jsonl")
+
+    # =====================================================
+    # 3C. NORMAL MODE
+    # =====================================================
+    else:
+        print("[GTBUILDER] Running in NORMAL MODE")
+
+        builder = GTBuilder(
+            dep_graph=G,
+            osv_records=osv_records,
+            nvd_records=nvd_records,
+            prefer_upstream_direction=not args.downstream
+        )
+
+        roots = builder.build_root_causes()
+        paths = builder.build_reference_paths(
+            roots=roots,
+            max_depth=args.max_depth,
+            time_constrained=not args.no_time_constraint
+        )
+        ref_out_path = os.path.join(args.out_paths, "ref_paths.jsonl")
+
+    # =====================================================
+    # 4. Write outputs
+    # =====================================================
     write_jsonl(args.out_root, (r.to_json() for r in roots))
-    write_jsonl(args.out_paths, (p.to_json() for p in paths))
+    write_jsonl(args.out_root, (p.to_json() for p in paths))
 
-    # -------- Summary ----------
-    print(f"[Summary]")
+    # =====================================================
+    # 5. Summary
+    # =====================================================
+    print(f"\n[Summary]")
     print(f"  Nodes: {len(G.nodes)} | Edges: {sum(len(v) for v in G.adj.values())}")
     print(f"  CVEs (OSV): {len(osv_records)} | CVEs (NVD): {len(nvd_records)}")
     print(f"  Roots: {len(roots)} | Paths: {len(paths)}")
     print(f"[Timing]")
-    print(f"  Load/Init: {(t1 - t0)*1000:.1f} ms")
-    print(f"  Roots    : {(t2 - t1)*1000:.1f} ms")
-    print(f"  Paths    : {(t3 - t2)*1000:.1f} ms")
-    print(f"  Total    : {(t3 - t0)*1000:.1f} ms")
+    print(f"  Total: {(time.time() - t0)*1000:.1f} ms")

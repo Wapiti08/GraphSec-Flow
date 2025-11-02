@@ -128,18 +128,49 @@ class TempCentricityOptimized(TempCentricity):
                 except Exception as e:
                     print(f"[warn] Window ({ts},{te}) failed: {e}")
         return results
+    
+def extract_cve_subgraph(G, k=4, min_cve_count=1):
+    ''' extract subgraph related to nodes with cve
+
+    - k: number of neighbor hop
+    - min_cve_count: the minimum number of CVE
+    
+    '''
+    # find nodes with cves
+    cve_nodes = [n for n, d in G.nodes(data=True) if d.get("has_cve") or (d.get("cve_count", 0) >= min_cve_count)]
+    if not cve_nodes:
+        print("[warn] No CVE nodes found; returning original graph.")
+        return G
+    
+    print(f"[info] Found {len(cve_nodes)} CVE nodes; extracting {k}-hop neighborhood...")
+
+    # collect neighbors of cve node
+    keep_nodes = set()
+    for cve in cve_nodes:
+        keep_nodes.add(cve)
+        keep_nodes.update(nx.single_source_shortest_path_length(G, cve, cutoff=k).keys())
+
+    # generate subgraph
+    subG = G.subgraph(keep_nodes).copy()
+    print(f"[info] Reduced graph: {subG.number_of_nodes()} nodes, {subG.number_of_edges()} edges")
+
+    return subG
+
 
 if __name__ == "__main__":
 
     t0_total = time.perf_counter()
 
     # data path
-    depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
+    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
 
     t0 = time.perf_counter()
     # load the graph
-    with depdata_path.open('rb') as fr:
+    with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
+
+    # use subgraph for calculation
+    depgraph = extract_cve_subgraph(depgraph, k =4)
 
     print(f"[info] Graph loaded: {depgraph.number_of_nodes()} nodes, "
           f"{depgraph.number_of_edges()} edges "
