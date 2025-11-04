@@ -10,10 +10,12 @@ sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 import time
 from eval.evaluation import _pick_total
 # ------ import core modules ------
-from cent.temp_cent import TempCentricity
+# from cent.temp_cent import TempCentricity
+from cent.temp_cent_fast import TempCentricityOptimized
 from com.commdet import TemporalCommDetector
 from src.path_track import PathConfig, RootCausePathAnalyzer
 from search.vamana import VamanaSearch, CVEVector, VamanaOnCVE
+from cent.temp_cent_fast import extract_cve_subgraph
 
 # ------- import helper functions -------
 from eval.evaluation import _zscore, _rank_metrics, _lead_time, _pick_total
@@ -33,7 +35,7 @@ import argparse
 import random
 random.seed(0)
 
-def benchmark_centrality(tempcent: TempCentricity, events, window_iter):
+def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter):
     '''
     events: [{'t': t_eval, "targets": {n1, n2, ...}}, ...]
     window_iter: iterative generator (t_s, t_e, t_eval)
@@ -535,17 +537,17 @@ def main():
         depgraph = pickle.load(f)
 
     # ----------- for quick test ---------
-    MAX_NODES = 1000  
-    if depgraph.number_of_nodes() > MAX_NODES:
-        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-        # random sampling
-        if len(valid_nodes) < MAX_NODES:
-            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-            keep = valid_nodes
-        else:
-            keep = random.sample(valid_nodes, MAX_NODES)
-        depgraph = depgraph.subgraph(keep).copy()
-        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+    # MAX_NODES = 1000  
+    # if depgraph.number_of_nodes() > MAX_NODES:
+    #     valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+    #     # random sampling
+    #     if len(valid_nodes) < MAX_NODES:
+    #         print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+    #         keep = valid_nodes
+    #     else:
+    #         keep = random.sample(valid_nodes, MAX_NODES)
+    #     depgraph = depgraph.subgraph(keep).copy()
+    #     print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
 
     # -------------- candiate ---------------
     candidates = []
@@ -572,7 +574,8 @@ def main():
         print("[cache] node_cve_scores loaded")
     
     # --------- centrality provider ---------
-    tempcent = TempCentricity(depgraph, search_scope="auto")
+    # tempcent = TempCentricity(depgraph, search_scope="auto")
+    tempcent = TempCentricityOptimized(depgraph, search_scope='auto')
 
     # for debug
     # for k, metas in cve_records_for_meta.items():
@@ -610,7 +613,6 @@ def main():
 
     print(f"[info] {len(events)} evaluation events from {t_eval_list[0]} to {t_eval_list[-1]}")
 
-
     # ------- time window iterator ---------
     ref_type = pd.Timestamp.now(tz="UTC")
 
@@ -624,6 +626,9 @@ def main():
                 _to_float_time(_to_same_type(d_eval, ref_type)) * 1000.0,                
                 )
 
+    # control graph to subgraph stick to node with cve
+    depgraph = extract_cve_subgraph(depgraph, k = 4)
+
     # --------- Run Benchmarks ---------
     all_metrics = {}
 
@@ -636,6 +641,10 @@ def main():
     all_metrics.update(comm)
     print("[info] Community benchmark done")
     print("current metrics:", all_metrics)
+
+    # replace with fast method
+    tempcent.degree_centrality = tempcent.degree_centrality_fast
+    tempcent.eigenvector_centrality = tempcent.eigenvector_centrality_fast
 
     # centrality
     cen = benchmark_centrality(tempcent, events, window_iter)

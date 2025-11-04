@@ -13,6 +13,64 @@ ISO_FMT = "%Y-%m-%d"
 
 CVE_RE = re.compile(r"CVE-\d{4}-\d{4,7}")
 
+# A robust parser for coordinates present in node name / attrs
+_coord_re = re.compile(r'^(?P<g>[\w.\-]+):(?P<a>[\w.\-]+)(?:@(?P<v>.+))?$')
+
+
+def _norm_pkg(s: str) -> str:
+    s = (s or "").lower().strip()
+    for suf in ("-core", "-parent", "-service", "-lib"):
+        if s.endswith(suf):
+            s = s[: -len(suf)]
+    return s
+
+def _build_pkg_index(G):
+    full2ids, art2ids = {}, {}
+    for nid, node in G.nodes.items():
+        pkg_full = _norm_pkg(getattr(node, "package", "") or "")
+        if not pkg_full:
+            continue
+        art = pkg_full.split(":")[-1]
+        full2ids.setdefault(pkg_full, set()).add(nid)
+        art2ids.setdefault(art, set()).add(nid)
+    return full2ids, art2ids
+
+def _resolve_root_ids(root_pkg: str, full2ids, art2ids):
+    p = _norm_pkg(root_pkg)
+    if p in full2ids:
+        return list(full2ids[p])
+    art = p.split(":")[-1]
+    return list(art2ids.get(art, []))
+
+def _norm(x: str) -> str:
+    return (x or "").strip().lower()
+
+def _extract_coords_from_node(nid, node_data) -> tuple[str, str]:
+    # Try attrs first
+    g = _norm(node_data.get("groupId")) if isinstance(node_data, dict) else ""
+    a = _norm(node_data.get("artifactId")) if isinstance(node_data, dict) else ""
+    if g and a:
+        return g, a
+    # Fallback to node string
+    s = str(node_data.get("name") if isinstance(node_data, dict) and "name" in node_data else nid)
+    m = _coord_re.match(s)
+    if m:
+        return _norm(m.group("g")), _norm(m.group("a"))
+    # As a last resort, try to split dotted name
+    if ":" in s:
+        parts = s.split(":")
+        if len(parts) >= 2:
+            return _norm(parts[0]), _norm(parts[1].split("@")[0])
+    return "", ""
+
+def _pkg_key_from_artifact(a: str) -> str:
+    # normalize a bit for pkg bucket
+    a = _norm(a)
+    # strip super-common suffixes
+    a = re.sub(r'[-_.](core|impl|common|api|parent|lib|service)$', "", a)
+    a = re.sub(r"[-_.]+", "-", a)
+    return a.strip("-_.")
+
 def _get_version(n):
     return (getattr(n, "version", None)
             or (n.get("version") if isinstance(n, dict) else None)

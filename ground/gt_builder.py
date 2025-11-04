@@ -25,6 +25,8 @@ from ground.helper import split_cve_meta_to_builder_inputs, _extract_cve_id, _un
 from ground.helper import _extract_coordinates_from_osv_pkg
 from ground.helper import _get_release,_get_version,_get_time,_node_key
 from ground.helper import build_release_index_from_depgraph, resolve_root_to_node
+from ground.helper import _extract_coords_from_node, _pkg_key_from_artifact
+from ground.helper import _norm_pkg, _build_pkg_index, _resolve_root_ids
 from depdata.ana_fam_merge import debug_families
 from ground.fuzzy_search import layer_based_search
 import argparse
@@ -115,8 +117,6 @@ class Edge:
     dst: str
     time: Optional[datetime] = None
 
-
-
 class DepGraph:
     ''' Time-aware directed graph of package dependencies, using adjcency list representation.'''
     def __init__(self):
@@ -134,11 +134,14 @@ class DepGraph:
         self.by_coords: Dict[Tuple[str, str], List[Node]] = defaultdict(list)
         # node.id -> release lower
         self.release_lc: Dict[str, str] = {}
+        self.by_artifact: Dict[str, List[Node]] = defaultdict(list)
+        self.by_artifact_prefix: Dict[str, List[Node]] = defaultdict(list)
 
     @staticmethod
     def from_json(obj: Dict[str, Any]):
         g = DepGraph()
         for n in obj.get("nodes", []):
+            # parse nid ,pkg, ver, t
             if not isinstance(n, dict):
                 continue
             nid = n.get("id") or n.get("name")
@@ -174,9 +177,69 @@ class DepGraph:
                     ver = nid.split("@")[1]
                 else:
                     ver = n.get("version") or ""
-            
+                    
             g.nodes[nid] = Node(id = nid, package=pkg, version=ver, time=t)
-        
+
+            # build mutiple indexing
+            release = _get_release(g.nodes[nid]) if "_get_release" in globals() else f"{g.nodes[nid].package}:{g.nodes[nid].version}"
+            pkg_l = (g.nodes[nid].package or "").lower()
+            ver_l = (g.nodes[nid].version or "").lower()
+            g.by_pkg[pkg_l].append(g.nodes[nid])
+            if pkg_l and ver_l:
+                g.by_pkg_ver[(pkg_l, ver_l)] = g.nodes[nid]
+            
+            g.release_lc[nid] = (release or "").lower()
+            parts = release.split(":")
+            added = False
+            if len(parts) >= 3:
+                group = parts[0].lower()
+                artifact = parts[1].lower()
+                g.by_coords[(group, artifact)].append(g.nodes[nid])
+                # — artifact-only & pkg buckets —
+                g.by_artifact[artifact].append(g.nodes[nid]) 
+                # normalized artifact into a 'pkg' bucket as well (helps when OSV only gives artifact)
+                g.by_pkg[artifact].append(g.nodes[nid]) 
+                base = _pkg_key_from_artifact(artifact)       
+                if base:
+                    g.by_pkg[base].append(g.nodes[nid])       
+
+                # — vendor-aware family prefixes: "apache-tomcat-embed-core" -> "tomcat", "tomcat-embed" —
+                vendor_stops = {"apache","jboss","eclipse","wildfly","xwiki","org","com","net","io"}
+                toks = [t for t in artifact.split("-") if t]
+                while toks and toks[0] in vendor_stops:
+                    toks = toks[1:]
+                if toks:
+                    pref1 = toks[0]
+                    g.by_artifact_prefix[pref1].append(g.nodes[nid])       # "tomcat"
+                    if len(toks) >= 2:
+                        pref2 = "-".join(toks[:2])
+                        g.by_artifact_prefix[pref2].append(g.nodes[nid])   # "tomcat-embed"
+
+                added = True
+
+            # ── if release isn’t 3-parts, try attributes (groupId/artifactId)
+            if not added and isinstance(g.nodes[nid], dict):
+                g_guess = (g.nodes[nid].get("groupId") or "").lower()
+                a_guess = (g.nodes[nid].get("artifactId") or "").lower()
+                if a_guess:
+                    g.by_artifact[a_guess].append(g.nodes[nid])    
+                    g.by_pkg[a_guess].append(g.nodes[nid])     
+                    base = _pkg_key_from_artifact(a_guess)
+                    if base:
+                        g.by_pkg[base].append(g.nodes[nid])     
+                    vendor_stops = {"apache","jboss","eclipse","wildfly","xwiki","org","com","net","io"}
+                    toks = [t for t in a_guess.split("-") if t]
+                    while toks and toks[0] in vendor_stops:
+                        toks = toks[1:]
+                    if toks:
+                        pref1 = toks[0]
+                        g.by_artifact_prefix[pref1].append(g.nodes[nid])
+                        if len(toks) >= 2:
+                            pref2 = "-".join(toks[:2])
+                            g.by_artifact_prefix[pref2].append(g.nodes[nid])
+                    if g_guess:
+                        g.by_coords[(g_guess, a_guess)].append(g.nodes[nid])  # NEW
+
         for e in obj.get("edges", []):
             if not isinstance(e, dict):
                 continue
@@ -188,19 +251,6 @@ class DepGraph:
             edge = Edge(src = src, dst = dst, time=parse_date(e.get("time")))
             g.adj[edge.src].append(edge)
             g.rev[edge.dst].append(edge)
-
-        # build mutiple indexing
-        release = _get_release(g.nodes[nid]) if "_get_release" in globals() else f"{g.nodes[nid].package}:{g.nodes[nid].version}"
-        pkg_l = (g.nodes[nid].package or "").lower()
-        ver_l = (g.nodes[nid].version or "").lower()
-        g.by_pkg[pkg_l].append(g.nodes[nid])
-        if pkg_l and ver_l:
-            g.by_pkg_ver[(pkg_l, ver_l)] = g.nodes[nid]
-        
-        g.release_lc[nid] = (release or "").lower()
-        parts = release.split(":")
-        if len(parts) >= 3:
-            g.by_coords[(parts[0].lower(), parts[1].lower())].append(g.nodes[nid])
 
         return g
 
@@ -297,6 +347,7 @@ class GTBuilder:
         ''' extract package from OSV records to match dep_graph.release
         
         '''
+
         if isinstance(record, dict):
             pkgname = (self._package(record) or "").lower()
         else:
@@ -315,10 +366,52 @@ class GTBuilder:
             g = (coords.get("group") or "").lower()
             a = (coords.get("artifact") or "").lower()
             cand = self.g.by_coords.get((g, a), [])
+
             if cand:
                 return cand
-        
-        # 2) less strong matchL package name
+            
+            if not g and a:
+                a = a.lower()
+                # 1) direct artifact bucket
+                c_art = list(self.g.by_artifact.get(a, []))      
+                if c_art:
+                    return c_art
+                
+                hits = []
+                for (gg, aa), nodes in self.g.by_coords.items():
+                    if aa == a:
+                        hits.extend(nodes)
+                if hits:
+                    print(f"[MATCH][coords-aonly] any-group:{a} hits={len(hits)}")
+                    return hits
+
+                # 2) vendor-aware family prefix
+                vendor_stops = {"apache","jboss","eclipse","wildfly","xwiki","org","com","net","io"}
+                toks = [t for t in a.split("-") if t]
+                while toks and toks[0] in vendor_stops:
+                    toks = toks[1:]
+
+                if toks: 
+                    pref1 = toks[0]
+                    c_pref1 = list(self.g.by_artifact_prefix.get(pref1, []))
+                    if c_pref1:
+                        print(f"[MATCH][coords-aonly] prefix['{pref1}'] hits={len(c_pref1)}")
+                        return c_pref1
+                    if len(toks) >= 2:
+                        pref2 = "-".join(toks[:2])
+                        c_pref2 = list(self.g.by_artifact_prefix.get(pref2, []))
+                        if c_pref2:
+                            print(f"[MATCH][coords-aonly] prefix['{pref2}'] hits={len(c_pref2)}")
+                            return c_pref2
+                # 3) last-resort: small key-scan by startswith (bounded by index size, not nodes)
+                hits = []
+                for key, nodes in self.g.by_artifact.items():
+                    if key == a or key.startswith(a + "-") or a.startswith(key + "-"):
+                        hits.extend(nodes)
+                if hits:
+                    print(f"[MATCH][coords-aonly] fuzzy key '{a}' hits={len(hits)}")
+                    return hits
+
         if pkgname:
             candidates.extend(self.g.by_pkg.get(pkgname, []))
             if candidates:
@@ -541,30 +634,6 @@ class GTBuilder:
             
         return refs
 
-def _norm_pkg(s: str) -> str:
-    s = (s or "").lower().strip()
-    for suf in ("-core", "-parent", "-service", "-lib"):
-        if s.endswith(suf):
-            s = s[: -len(suf)]
-    return s
-
-def _build_pkg_index(G):
-    full2ids, art2ids = {}, {}
-    for nid, node in G.nodes.items():
-        pkg_full = _norm_pkg(getattr(node, "package", "") or "")
-        if not pkg_full:
-            continue
-        art = pkg_full.split(":")[-1]
-        full2ids.setdefault(pkg_full, set()).add(nid)
-        art2ids.setdefault(art, set()).add(nid)
-    return full2ids, art2ids
-
-def _resolve_root_ids(root_pkg: str, full2ids, art2ids):
-    p = _norm_pkg(root_pkg)
-    if p in full2ids:
-        return list(full2ids[p])
-    art = p.split(":")[-1]
-    return list(art2ids.get(art, []))
 
 if __name__ == "__main__":
 
@@ -633,36 +702,12 @@ if __name__ == "__main__":
     # =====================================================
     # 2. Mode selection
     # =====================================================
-    FAMILY_MODE = os.environ.get("FAMILY_MODE", "0") == "1"
     LAYER_MODE = os.environ.get("LAYER_MODE", "0") == "1"
-
-    # =====================================================
-    # 3A. FAMILY MODE
-    # =====================================================
-    if FAMILY_MODE:
-        print("[GTBUILDER] Running in FAMILY MODE")
-        release_index = build_release_index_from_depgraph(G)
-        debug_families(release_index, topn=10)
-
-        builder = GTBuilder(
-            dep_graph=G,
-            osv_records=osv_records,
-            nvd_records=nvd_records,
-            prefer_upstream_direction=not args.downstream
-        )
-
-        roots = builder.build_root_causes()
-        paths = builder.build_reference_paths(
-            roots=roots,
-            max_depth=args.max_depth,
-            time_constrained=not args.no_time_constraint
-        )
-        ref_out_path = os.path.join(args.out_root, "ref_paths_family.jsonl")
 
     # =====================================================
     # 3B. LAYER MODE (now standalone)
     # =====================================================
-    elif LAYER_MODE:
+    if LAYER_MODE:
         print("[GTBUILDER] Running in LAYER MODE (standalone)")
         release_index = build_release_index_from_depgraph(G)
         builder = GTBuilder(
@@ -688,10 +733,32 @@ if __name__ == "__main__":
         approx_paths = []
 
         for root in roots:
-            start_nodes = _resolve_root_ids(root.package, full2ids, art2ids)
+            pkg_l = (root.package or "").lower()
+            ver_l = (root.version or "").lower()
+
+            start_nodes = []
+            # 1 ) check (pkg, ver) first
+            n = builder.g.by_pkg_ver.get((pkg_l, ver_l))
+            if n:
+                start_nodes = [n.id if hasattr(n, "id") else str(n)]
+
+            # 2) check pkg first, then filter with version
             if not start_nodes:
-                print(f"[LAYER] skip root (unmapped): {root.package}")
+                for cand in builder.g.by_pkg.get(pkg_l, []):
+                    cver = getattr(cand, "version", "") or ""
+                    if (not ver_l) or (cver.lower() == ver_l):
+                        start_nodes.append(cand.id if hasattr(cand, "id") else str(cand))
+            
+            # 3) if root.package is "group: artifact", use by_coords
+            if not start_nodes and ":" in pkg_l:
+                g, a = pkg_l.split(":", 1)
+                for cand in builder.g.by_coords.get((g, a), []):
+                    start_nodes.append(cand.id if hasattr(cand, "id") else str(cand)) 
+            
+            if not start_nodes:
+                # print(f"[LAYER] skip root (unmapped): {root.package}@{root.version}")
                 continue
+            
             for start_id in start_nodes:
                 candidates = layer_based_search(
                     builder.g,

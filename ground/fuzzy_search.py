@@ -134,20 +134,49 @@ def layer_based_search(G, root, cve_meta, family_index=None, max_depth=3, sample
     # ---- Matching utilities
     # ============================================================
 
+    def _node_display_name(n):
+        data = G.nodes[n]
+        if isinstance(data, dict):
+            for k in ("name", "artifactId", "artifact", "id", "key"):
+                if data.get(k):
+                    return str(data[k])
+        return str(n)
+
+    def _in_same_family_wrapped(p1, p2):
+        try:
+            return in_same_family(p1, p2, family_index)
+        except TypeError:
+            return in_same_family(p1, p2)
+
     def normalize_pkg_name(name):
+        """Normalize package names for flexible matching."""
         if not name:
             return None
-        name = name.lower()
+        name = name.lower().strip()
 
-        # If it's a repo path like "github:apache/struts" → keep last segment
-        if ":" in name and "/" in name:
+        # Handle common ecosystem prefixes
+        for prefix in ("maven.", "pypi.", "npm.", "pkg:", "github:"):
+            if name.startswith(prefix):
+                name = name[len(prefix):]
+
+        # Split Maven-like groupId:artifactId
+        if ":" in name:
+            name = name.split(":")[-1]
+
+        # Handle repo paths like github:apache/struts
+        if "/" in name:
             name = name.split("/")[-1]
 
-        # Remove ecosystem prefix and unwanted suffixes
+        # Drop org/company parts (e.g., org.springframework → spring)
+        if "." in name:
+            name = name.split(".")[-1]
+
+        # Remove common suffixes
         name = re.sub(r"[-_.](core|parent|service|lib|impl|common|api|test)$", "", name)
         name = re.sub(r"[-_.]+", "-", name)
-        return name.strip("-_.")
 
+        return name.strip("-_.")
+    
     def in_same_family(pkg1, pkg2):
         pkg1, pkg2 = pkg1.lower(), pkg2.lower()
         return (pkg1 == pkg2 or pkg1 in pkg2 or pkg2 in pkg1
@@ -209,19 +238,34 @@ def layer_based_search(G, root, cve_meta, family_index=None, max_depth=3, sample
                 pkg_name = normalize_pkg_name(get_pkg_name(c))
                 if not pkg_name:
                     continue
-                if in_same_family(pkg, pkg_name):
-                    found_pkg += 1
-                    versions = get_versions(c)
-                    if is_version_close(ver, versions):
-                        version_hit += 1
-                        candidates.append({
-                            "root": root,
-                            "path": new_path,
-                            "match": get_cve_id(c),
-                            "distance": depth + 1,
-                            "mode": "layer"
-                        })
-                        break
+                
+                node_display = _node_display_name(node)              
+                pkg_norm  = normalize_pkg_name(pkg_name)              
+                node_norm = normalize_pkg_name(node_display)          
+
+                name_hit = False                                      
+                if pkg_norm and node_norm:                            
+                    if (pkg_norm == node_norm                         
+                        or pkg_norm in node_norm                      
+                        or node_norm in pkg_norm                      
+                        or _in_same_family_wrapped(pkg_norm, node_norm)):  
+                        name_hit = True
+
+                if not name_hit:                                     
+                    continue      
+                
+                found_pkg += 1
+                versions = get_versions(c)
+                if is_version_close(ver, versions):
+                    version_hit += 1
+                    candidates.append({
+                        "root": root,
+                        "path": new_path,
+                        "match": get_cve_id(c),
+                        "distance": depth + 1,
+                        "mode": "layer"
+                    })
+                    break
             queue.append((nbr, new_path, depth + 1))
 
     # ============================================================
