@@ -42,12 +42,6 @@ def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter)
     return: dict of metrics
     '''
 
-    # ----- for debug --------
-    print(f"[debug] window_iter count: {len(list(window_iter()))}")
-    for ev in events[:3]:
-        print(f"[debug] event t={ev['t']} targets={ev['targets']}")
-
-
     variants = {
         "Static-DC": lambda: _pick_total(tempcent.static_degree()),
         "Static-EVC": lambda: tempcent.static_eigen(),
@@ -157,10 +151,6 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
 
     commres = tcd.detect_communities(depgraph)
 
-    print(f"[debug] events loaded: {len(events)}")
-    for ev in events[:3]:
-        print(f"[debug] sample event t={ev['t']}, targets={list(ev['targets'])[:5]}")
-
     for (t_s, t_e, t_eval) in window_iter():
         if isinstance(t_eval, datetime):
             t_eval = t_eval.timestamp() * 1000.0
@@ -194,8 +184,6 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
             mrr, h3 = _rank_metrics(norm, ev["targets"])
             mrrs.append(mrr)
             h3s.append(h3)
-
-    print(f"[debug] window count: {len(series_scores)}, events used: {len(events)}")
 
     return {
         "Community": {
