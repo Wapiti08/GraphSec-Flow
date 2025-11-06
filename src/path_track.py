@@ -365,6 +365,7 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
             # Diagnose
             dep = self.depgraph
             reason = []
+
             if source not in dep:
                 # Try a simple normalization: strip leading 'n' if present and retry
                 alt = source[1:] if isinstance(source, str) and source.startswith('n') else None
@@ -379,12 +380,10 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
                 else:
                     reason.append(f"source timestamp {ts} outside window [{cfg.t_start}, {cfg.t_end}]")
 
-            if source not in D:
-                details = "; ".join(reason) or "unknown"
-                raise ValueError(
-                    f"Root cause source={source} not present in temporal window ({details})"
-                )
-            raise ValueError(f"Root cause source={source} not present in temporal window")
+            msg = "; ".join(reason) or "unknown reason"
+            print(f"[warn] Skipping root {source}: not present in current temporal window ({msg})")
+            # Gracefully skip this source by returning an empty result
+            return nx.DiGraph(), {}
 
         # 3) get target set
         if cfg.targets and len(cfg.targets) > 0:
@@ -460,7 +459,11 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
                 return root_comm, root_node, None, {}, []
 
         # ------- compute path ----------
-        D, paths_by_t = self._compute_paths_from_source(root_node, cfg)
+        try:
+            D, paths_by_t = self._compute_paths_from_source(root_node, cfg)
+        except ValueError as e:
+            print(f"[warn] Skipping root {root_node} due to error: {e}")
+            return None, {}
 
         # 3) generate summaries
         records: List[Dict[str, Any]] = []

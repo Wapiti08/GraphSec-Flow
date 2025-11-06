@@ -93,12 +93,10 @@ def evaluate_family_merge(depgraph_path, cve_meta_path, out_root, out_paths):
 if __name__ == "__main__":
     depgraph_path = "/workspace/GraphSec-Flow/data/dep_graph_cve.pkl"
     cve_meta_path = "/workspace/GraphSec-Flow/data/cve_records_for_meta.pkl"
-    out_root = "/workspace/GraphSec-Flow/data/root_causes.jsonl"
+    out_root = "/workspace/GraphSec-Flow/data"
+    out_causes = "/workspace/GraphSec-Flow/data/root_causes.jsonl"
     out_paths = "/workspace/GraphSec-Flow/data/ref_paths.jsonl"
 
-    # ------------------------------------------------------------
-    # [LAYER MODE] Optional block to evaluate technical-lag recovery
-    # ------------------------------------------------------------
     print("\n=== [4b] Build Ground Truth (Layer-Based Search Mode) ===")
     ref_path_layer = out_paths.replace(".jsonl", "_layer.jsonl")
     root_path_layer = out_root.replace(".jsonl", "_layer.jsonl")
@@ -110,8 +108,8 @@ if __name__ == "__main__":
             sys.executable, "gt_builder.py",
             "--dep-graph", depgraph_path,
             "--cve-meta", cve_meta_path,
-            "--out-root", root_path_layer,
-            "--out-paths", ref_path_layer,
+            "--out-root", out_root,
+            "--out-paths", out_root,
             # "--smoke-test",
         ],
         check=True,

@@ -35,7 +35,7 @@ import argparse
 import random
 random.seed(0)
 
-def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter):
+def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter, window_size=10):
     '''
     events: [{'t': t_eval, "targets": {n1, n2, ...}}, ...]
     window_iter: iterative generator (t_s, t_e, t_eval)
@@ -73,7 +73,7 @@ def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter)
             norm = _zscore(raw)
             series_scores.append((t_eval, norm))
 
-            ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
+            ev = next((e for e in events if abs(e["t"] - t_eval) < window_size * 86400000.0), None)
             if ev:
                 mrr, h3 = _rank_metrics(norm, ev["targets"])
                 mrrs.append(mrr)
@@ -106,7 +106,7 @@ def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter)
             series_scores.append((t_eval, norm))
 
             # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
-            ev = next((e for e in events if abs(e["t"] - t_eval) < 30 * 86400000.0), None)
+            ev = next((e for e in events if abs(e["t"] - t_eval) < window_size * 86400000.0), None)
 
             if ev:
                 mrr, h3 = _rank_metrics(norm, ev["targets"])
@@ -124,7 +124,7 @@ def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter)
     return results
 
 
-def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], events: List[Dict[str, Any]], window_iter):
+def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], events: List[Dict[str, Any]], window_iter, window_size=10):
     '''
     node_cve_scores: {node -> float} Cached per-node aggregate scores (from node_cve_scores.pkl)
     '''
@@ -151,6 +151,7 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
 
     commres = tcd.detect_communities(depgraph)
 
+    # Window adjustments: use a larger time window for better sample size
     for (t_s, t_e, t_eval) in window_iter():
         if isinstance(t_eval, datetime):
             t_eval = t_eval.timestamp() * 1000.0
@@ -166,8 +167,7 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
         # return the nodes in the best community
         root_nodes = set(commres.comm_to_nodes.get(best_comm, []))
         # ----- community metrics -----
-        # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
-        ev = next((e for e in events if abs(e["t"] - t_eval) < 30 * 86400000.0), None)
+        ev = next((e for e in events if abs(e["t"] - t_eval) < window_size * 86400000.0), None)
 
         if ev:
             targets = set(ev["targets"])
@@ -178,6 +178,7 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
         
         win_scores = _mask_or_fill(cent_scores or {}, root_nodes, fill=0.0)
         norm = _zscore(win_scores)
+
         series_scores.append((t_eval, norm))
 
         if ev:
@@ -212,6 +213,7 @@ def benchmark_paths(
         k_paths: int = 5,
         strict_increase: bool=False,
         candidates: list=None,
+        window_size: int=10,
     ):
     ''' 
     automatically identify root source, construct temporal graph and weight edges,
@@ -286,7 +288,7 @@ def benchmark_paths(
         series_scores.append((t_eval, norm))
 
         # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
-        ev = next((e for e in events if abs(e["t"] - t_eval) < 30 * 86400000.0), None)
+        ev = next((e for e in events if abs(e["t"] - t_eval) < window_size * 86400000.0), None)
 
         if ev:
             mrr, h3 = _rank_metrics(norm, ev["targets"])
@@ -306,7 +308,6 @@ def benchmark_paths(
         }
     }
 
-
 def benchmark_full(
     depgraph,
     tempcent,
@@ -321,7 +322,8 @@ def benchmark_full(
     gamma: float = 0.0,
     k_paths: int = 5,
     strict_increase: bool=False,
-    fuse_lambda: float = 0.6
+    fuse_lambda: float = 0.6,
+    window_size: int=10,
     ):
     ''' Full benchmark with community detection + path finding + aggregation
     
@@ -374,7 +376,7 @@ def benchmark_full(
 
         # community hit metric
         # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
-        ev = next((e for e in events if abs(e["t"] - t_eval) < 30 * 86400000.0), None)
+        ev = next((e for e in events if abs(e["t"] - t_eval) < window_size * 86400000.0), None)
 
         if ev:
             targets = set(ev["targets"])
@@ -466,12 +468,12 @@ def load_ground_truth(args):
     Load ground truth ref_paths and root_causes (normal + family)
     """
     from utils.util import read_jsonl
-    gt_normal, gt_family = [], []
+    gt_normal, gt_layer = [], []
     if args.ref:
         gt_normal = read_jsonl(args.ref)
-    if args.ref_family:
-        gt_family = read_jsonl(args.ref_family)
-    if not gt_family and not gt_normal:
+    if args.ref_layer:
+        gt_layer = read_jsonl(args.ref_layer)
+    if not gt_layer and not gt_normal:
         print("[WARN] No ground truth ref_paths provided. Skip GT evaluation.")
         return None, None
 
@@ -482,25 +484,25 @@ def load_ground_truth(args):
         print(f"[GroundTruth] {label}: total={total}, nonempty={nonempty}, ratio={ratio}")
         return ratio
 
-    if gt_family:
-        summarize_ref_paths(gt_family, "family version")
+    if gt_layer:
+        summarize_ref_paths(gt_layer, "layer version")
     if gt_normal:
         summarize_ref_paths(gt_normal, "normal version")
 
-    return gt_normal, gt_family
+    return gt_normal, gt_layer
 
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark with optional ground truth")
     parser.add_argument("--ref", type=str, help="Path to ref_paths.jsonl", default=None)
-    parser.add_argument("--ref-family", type=str, help="Path to ref_paths_family.jsonl", default=None)
+    parser.add_argument("--ref-layer", type=str, help="Path to ref_paths_layer.jsonl", default=None)
     parser.add_argument("--root", type=str, help="Path to root_causes.jsonl", default=None)
     parser.add_argument("--pred", type=str, help="Optional path to model predicted paths (json)", default=None)
 
     args, unknown = parser.parse_known_args()
     
     print("\n=== [1] Loading Ground Truth ===")
-    gt_normal, gt_family = load_ground_truth(args)
+    gt_normal, gt_layer = load_ground_truth(args)
 
     # Load predicted paths if available
     predicted_paths = None
@@ -552,7 +554,6 @@ def main():
     print("[cache] nodeid_to_texts & cve_records_for_meta loaded")
 
     # ---------- load per_cve_scores & node_cve_scores -----------
-    per_cve_scores = None
     node_cve_scores = None
     if per_cve_path.exists():
         per_cve_scores = pickle.loads(per_cve_path.read_bytes())
@@ -608,14 +609,15 @@ def main():
         for d_eval in t_eval_list:
             d_s = d_eval - timedelta(days=lookback_days)
             d_e = d_eval
+            t_eval_mid = d_s + (d_e - d_s) / 2
             yield (
                 _to_float_time(_to_same_type(d_s, ref_type)) * 1000.0,
                 _to_float_time(_to_same_type(d_e, ref_type)) * 1000.0,
-                _to_float_time(_to_same_type(d_eval, ref_type)) * 1000.0,                
+                _to_float_time(_to_same_type(t_eval_mid, ref_type)) * 1000.0,                
                 )
 
     # control graph to subgraph stick to node with cve
-    depgraph = extract_cve_subgraph(depgraph, k = 4)
+    depgraph = extract_cve_subgraph(depgraph, k = 2)
 
     # --------- Run Benchmarks ---------
     all_metrics = {}
@@ -663,8 +665,8 @@ def main():
                     targets.update(p)
             return targets
 
-        if gt_family:
-            gt_targets = collect_targets(gt_family)
+        if gt_layer:
+            gt_targets = collect_targets(gt_layer)
             f1_fam = _f1_from_paths(predicted_paths, gt_targets)
             print(f"[Eval] F1 vs FAMILY ground truth = {f1_fam:.3f}")
 

@@ -81,7 +81,7 @@ class TempCentricityOptimized(TempCentricity):
             return {}
         
         mask = m.astype(np.bool_)
-        n_win = int(mask.sum*())
+        n_win = int(mask.sum())
 
         if n_win < 2:
             return {}
@@ -129,7 +129,7 @@ class TempCentricityOptimized(TempCentricity):
                     print(f"[warn] Window ({ts},{te}) failed: {e}")
         return results
     
-def extract_cve_subgraph(G, k=4, min_cve_count=1):
+def extract_cve_subgraph(G, k=2, min_cve_count=1):
     ''' extract subgraph related to nodes with cve
 
     - k: number of neighbor hop
@@ -170,7 +170,7 @@ if __name__ == "__main__":
         depgraph = pickle.load(fr)
 
     # use subgraph for calculation
-    depgraph = extract_cve_subgraph(depgraph, k =4)
+    depgraph = extract_cve_subgraph(depgraph, k =2)
 
     print(f"[info] Graph loaded: {depgraph.number_of_nodes()} nodes, "
           f"{depgraph.number_of_edges()} edges "

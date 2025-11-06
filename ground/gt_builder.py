@@ -26,7 +26,7 @@ from ground.helper import _extract_coordinates_from_osv_pkg
 from ground.helper import _get_release,_get_version,_get_time,_node_key
 from ground.helper import build_release_index_from_depgraph, resolve_root_to_node
 from ground.helper import _extract_coords_from_node, _pkg_key_from_artifact
-from ground.helper import _norm_pkg, _build_pkg_index, _resolve_root_ids
+from ground.helper import _norm_pkg, _build_pkg_index, _resolve_root_ids, resolve_package_name
 from depdata.ana_fam_merge import debug_families
 from ground.fuzzy_search import layer_based_search
 import argparse
@@ -326,11 +326,38 @@ class GTBuilder:
 
 
     @staticmethod
-    def _package(record: Dict[str, Any]) -> Optional[str]:
-        pkg = record.get("package") or record.get("pkg") or record.get("name")
-        if pkg:
-            return pkg
-        return GTBuilder._osv_infer_package(record)
+    def _package(record: Any) -> Optional[str]:
+        """
+        Extract package name from OSV-style dicts or Node objects.
+        Compatible with both ingest(OSV) and graph-matching stages.
+        """
+        pkg = None
+
+        # --- Case 1: Node object ---
+        if hasattr(record, "package"):
+            pkg = getattr(record, "package")
+
+        # --- Case 2: dict ---
+        elif isinstance(record, dict):
+            pkg = record.get("package") or record.get("pkg") or record.get("name")
+            if not pkg:
+                pkg = GTBuilder._osv_infer_package(record)
+
+        # --- Case 3: plain string ---
+        elif isinstance(record, str):
+            pkg = record
+
+        # --- Normalize ---
+        if isinstance(pkg, str):
+            pkg = pkg.strip()
+            # trim 'group:artifact' or 'ecosystem/package'
+            if ":" in pkg:
+                pkg = pkg.split(":")[-1]
+            if "/" in pkg:
+                pkg = pkg.split("/")[-1]
+            pkg = pkg.lower()
+
+        return pkg
 
     @staticmethod
     def _fix_commits(record: Dict[str, Any]) -> List[str]:
@@ -458,7 +485,6 @@ class GTBuilder:
                 matched.append(n)
         return matched
 
-
     def _earliest_node(self, nodes: List[Node]) -> Optional[Node]:
         if not nodes:
             return None
@@ -559,7 +585,7 @@ class GTBuilder:
 
         return roots
 
-    def build_reference_paths(self, roots: List[RootCause], max_depth: int = 5, time_constrained: bool = True) -> List[ReferencePath]:
+    def build_reference_paths(self, roots: List[RootCause], max_depth: int = 3, time_constrained: bool = True) -> List[ReferencePath]:
         refs: List[ReferencePath] = []
 
         def node_id(pkg: str, ver: str) -> str:
@@ -733,8 +759,14 @@ if __name__ == "__main__":
         approx_paths = []
 
         for root in roots:
+            print(f"[DEBUG] by_pkg_ver keys={list(builder.g.by_pkg_ver.keys())[:5]}")
+            print(f"[DEBUG] by_pkg keys={list(builder.g.by_pkg.keys())[:5]}")
+            print(f"[DEBUG] by_coords keys={list(builder.g.by_coords.keys())[:5]}")
+
             pkg_l = (root.package or "").lower()
             ver_l = (root.version or "").lower()
+
+            pkg_l = resolve_package_name(pkg_l, builder.g.by_pkg.keys())
 
             start_nodes = []
             # 1 ) check (pkg, ver) first
@@ -760,12 +792,15 @@ if __name__ == "__main__":
                 continue
             
             for start_id in start_nodes:
+                print(f"[DEBUG] Direct call: start_id={start_id}, adj={list(builder.g.adj.get(start_id, []))}")
                 candidates = layer_based_search(
                     builder.g,
                     start_id,
                     builder.osv + builder.nvd,
                     family_index=release_index
                 )
+                print(f"[DEBUG] layer_based_search returned {len(candidates)} items")
+
                 if candidates:
                     approx_paths.extend([
                         ReferencePath(
@@ -801,14 +836,16 @@ if __name__ == "__main__":
             max_depth=args.max_depth,
             time_constrained=not args.no_time_constraint
         )
-        ref_out_path = os.path.join(args.out_paths, "ref_paths.jsonl")
 
+        ref_out_path = os.path.join(args.out_paths, "ref_paths.jsonl")
+    
     # =====================================================
     # 4. Write outputs
     # =====================================================
-    write_jsonl(args.out_root, (r.to_json() for r in roots))
-    write_jsonl(args.out_root, (p.to_json() for p in paths))
-
+    root_path = os.path.join(args.out_root, "root_causes_layer.jsonl")
+    path_path = os.path.join(args.out_root, "ref_paths_layer.jsonl")
+    write_jsonl(root_path, (r.to_json() for r in roots))
+    write_jsonl(path_path, (p.to_json() for p in paths))
     # =====================================================
     # 5. Summary
     # =====================================================

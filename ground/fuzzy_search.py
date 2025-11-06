@@ -12,11 +12,24 @@ import random
 import re
 from cve.cvescore import _osv_infer_packages
 
-def layer_based_search(G, root, cve_meta, family_index=None, max_depth=3, sample_limit=5):
+def layer_based_search(G, root, cve_meta, family_index=None, max_depth=10, sample_limit=5):
     """Layer-based path search with detailed debugging and auto inference."""
+    
+    print(f"[DEBUG][LAYER] start_id={root}, total_nodes={len(G.nodes)}")
+
     candidates = []
     visited = {root}
     queue = [(root, [root], 0)]
+
+    # --- New debug: print node summary ---
+    if hasattr(G, "nodes") and root in G.nodes:
+        node = G.nodes[root]
+        pkg = getattr(node, "package", None)
+        ver = getattr(node, "version", None)
+        print(f"[DEBUG][LAYER] start node package={pkg} version={ver}")
+    else:
+        print(f"[DEBUG][LAYER] start node not found in graph!")
+
 
     # for debug
     debug=True
@@ -120,13 +133,13 @@ def layer_based_search(G, root, cve_meta, family_index=None, max_depth=3, sample
     # ---- Utility: successor iteration (Depgraph or NetworkX)
     # ============================================================
 
-    def iter_successors(G, node):
-        # Traverse reverse direction: find who depends on this node
-        if hasattr(G, "rev") and isinstance(G.rev, dict):
+    def iter_successors(G, node, use_reverse=False):
+        """Iterate successors in normal or reverse direction."""
+        if use_reverse and hasattr(G, "rev") and isinstance(G.rev, dict):
             for edge in G.rev.get(node, []):
                 yield edge.src
             return
-        # Fallback: if reverse not present, use adj
+        # Normal direction
         for edge in G.adj.get(node, []):
             yield edge.dst
 
@@ -182,13 +195,24 @@ def layer_based_search(G, root, cve_meta, family_index=None, max_depth=3, sample
         return (pkg1 == pkg2 or pkg1 in pkg2 or pkg2 in pkg1
                 or family_index.get(pkg1) == family_index.get(pkg2))
 
-    def is_version_close(ver, affected_versions, tol=2):
+    def is_version_close(ver, affected_versions, tol=1):
+        ''' choose reasonable version closeness within tolerance to avoid explosive matches
+         
+        '''
         try:
             v = version.parse(str(ver))
             for av in affected_versions:
                 avv = version.parse(str(av))
-                if abs((v.release[1] if len(v.release) > 1 else 0) -
-                       (avv.release[1] if len(avv.release) > 1 else 0)) <= tol:
+                # major must be the same
+                if len(v.release) > 0 and len(avv.release) > 0 and v.release[0] != avv.release[0]:
+                    continue
+                
+                # match when minor/patch difference within tolerance
+                minor_diff = abs((v.release[1] if len(v.release) > 1 else 0) -
+                             (avv.release[1] if len(avv.release) > 1 else 0))
+                patch_diff = abs((v.release[2] if len(v.release) > 2 else 0) -
+                                (avv.release[2] if len(avv.release) > 2 else 0))
+                if minor_diff + patch_diff <= tol:
                     return True
         except Exception:
             pass
@@ -225,6 +249,8 @@ def layer_based_search(G, root, cve_meta, family_index=None, max_depth=3, sample
         if depth >= max_depth:
             continue
 
+        print(f"[DEBUG][LAYER] depth={depth} exploring node={node}")
+
         for nbr in iter_successors(G, node):
             if nbr in visited:
                 continue
@@ -257,6 +283,7 @@ def layer_based_search(G, root, cve_meta, family_index=None, max_depth=3, sample
                 found_pkg += 1
                 versions = get_versions(c)
                 if is_version_close(ver, versions):
+
                     version_hit += 1
                     candidates.append({
                         "root": root,
