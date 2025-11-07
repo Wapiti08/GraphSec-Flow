@@ -675,7 +675,7 @@ if __name__ == "__main__":
     ap.add_argument("--out-root", required=True)
     ap.add_argument("--out-paths", required=True)
     ap.add_argument("--downstream", action="store_true")
-    ap.add_argument("--max-depth", type=int, default=6)
+    ap.add_argument("--max-depth", type=int, default=3)
     ap.add_argument("--no-time-constraint", action="store_true")
     args = ap.parse_args()
 

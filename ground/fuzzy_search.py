@@ -12,7 +12,7 @@ import random
 import re
 from cve.cvescore import _osv_infer_packages
 
-def layer_based_search(G, root, cve_meta, family_index=None, max_depth=10, sample_limit=5):
+def layer_based_search(G, root, cve_meta, family_index=None, max_depth=3, sample_limit=5):
     """Layer-based path search with detailed debugging and auto inference."""
     
     print(f"[DEBUG][LAYER] start_id={root}, total_nodes={len(G.nodes)}")

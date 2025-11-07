@@ -42,7 +42,7 @@ def _rank_metrics(scores: Dict, targets):
     return mrr, hits3
 
 
-def _lead_time(series_scores, events, thresh=1.0):
+def _lead_time(series_scores, events, thresh=0.8):
     ''' Compute the amount of time before a node is detected 
     (score exceeds threshold) "before an event occurs"
     
