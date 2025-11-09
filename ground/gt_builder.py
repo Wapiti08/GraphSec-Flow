@@ -585,7 +585,7 @@ class GTBuilder:
 
         return roots
 
-    def build_reference_paths(self, roots: List[RootCause], max_depth: int = 3, time_constrained: bool = True) -> List[ReferencePath]:
+    def build_reference_paths(self, roots: List[RootCause], max_depth: int = 6, time_constrained: bool = True) -> List[ReferencePath]:
         refs: List[ReferencePath] = []
 
         def node_id(pkg: str, ver: str) -> str:
@@ -675,7 +675,7 @@ if __name__ == "__main__":
     ap.add_argument("--out-root", required=True)
     ap.add_argument("--out-paths", required=True)
     ap.add_argument("--downstream", action="store_true")
-    ap.add_argument("--max-depth", type=int, default=3)
+    ap.add_argument("--max-depth", type=int, default=6)
     ap.add_argument("--no-time-constraint", action="store_true")
     args = ap.parse_args()
 

@@ -12,6 +12,7 @@ sys.path.insert(0, Path(sys.path[0]).parent.as_posix())
 import networkx as nx
 from pathlib import Path
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 import pickle
 from wins.tempwins_tuning import recommend_window_params
 from utils.helpers import agg_network_influence
@@ -28,15 +29,25 @@ import numba
 from scipy.sparse.linalg import lobpcg
 from cent.temp_cent import TempCentricity, make_build_series_fn_warm, probe_topk_r_candidates
 import multiprocessing
+from cve.graph_cve import extract_cve_subgraph
+import random
+import os
+
+random.seed(42)
+
+# ==============================
+# Global Thread Control
+# ==============================
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+numba.set_num_threads(4)
 
 
-try:
-    from joblib import Parallel, delayed
-    _HAS_JOBLIB = True
-except Exception:
-    _HAS_JOBLIB = False
-
-
+# ==============================
+# Numba Kernel
+# ==============================
 @njit(parallel=True, fastmath=True)
 def _masked_degree_csr(indptr, indices, mask):
     n = len(mask)
@@ -49,6 +60,20 @@ def _masked_degree_csr(indptr, indices, mask):
                 if mask[nbr]:
                     deg[i] += 1
     return deg
+
+# ---------- helper for multiprocessing ----------
+def _batch_compute_parallel(args):
+    """Top-level helper so it can be pickled by ProcessPoolExecutor."""
+    obj_ref, func_name, batch = args
+    func = getattr(obj_ref, func_name)
+    batch_results = []
+    for (t_s, t_e) in batch:
+        try:
+            res = func(t_s, t_e)
+            batch_results.append((t_s, t_e, res))
+        except Exception as e:
+            print(f"[warn] Window ({t_s},{t_e}) failed inside batch: {e}")
+    return batch_results
 
 # ------------ Optimized High-Level Class -------------
 
@@ -101,10 +126,21 @@ class TempCentricityOptimized(TempCentricity):
             return {}
         
         A_win = self._A[L:R, L:R]
-        if A_win.shape[0] < 2:
-            return {}
-        # Approximate eigenvector using few iterations
         n = A_win.shape[0]
+        if n < 2:
+            return {}
+
+        # small subgraph shortcut
+        if n < 10:
+            deg = np.array(A_win.sum(axis=1)).ravel()
+            s = deg.sum()
+            if s == 0:
+                return {}
+            deg /= s
+            nodes = self._nodes_sorted_by_t[L:R]
+            return {nodes[i]: float(deg[i]) for i in range(n)}
+
+        # regular eigenvector
         X = np.random.rand(n, 1)
         vals, vecs = lobpcg(A_win, X, tol=tol, maxiter=50)
         vec = np.abs(vecs[:, 0])
@@ -112,51 +148,72 @@ class TempCentricityOptimized(TempCentricity):
         nodes = self._nodes_sorted_by_t[L:R]
         return {nodes[i]: float(vec[i]) for i in range(n)}
     
-    # ------------ Parallel Temporal Series -------------
+    
+    # ------------ Adaptive Parallel Temporal Series -------------
     def compute_series_parallel(self, window_list, mode="eigenvector", max_workers=None):
-        if max_workers is None:
-            max_workers = max(1, multiprocessing.cpu_count() // 2)
-        results = []
+        n_nodes = self._A.shape[0]
+        n_windows = len(window_list)
+        if n_windows == 0:
+            print("[warn] No windows provided.")
+            return []
+        
         func = self.degree_centrality_fast if mode == "degree" else self.eigenvector_centrality_fast
-        with ProcessPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(func, t_s, t_e): (t_s, t_e) for t_s, t_e in window_list}
-            for fut in as_completed(futures):
-                ts, te = futures[fut]
+
+        # ----------- Estimate window sizes -----------
+        sizes = []
+        for (t_s, t_e) in window_list[:min(50, len(window_list))]:
+            m, L, R = self._mask_for_window(t_s, t_e)
+            if m is not None:
+                sizes.append(int(m.sum()))
+        if sizes:
+            print(f"[debug] Avg window size: {np.mean(sizes):.1f}, median: {np.median(sizes):.1f}")
+
+        # ----------- Partition windows by size -----------
+        small_windows, large_windows = [], []
+        for (t_s, t_e) in window_list:
+            m, L, R = self._mask_for_window(t_s, t_e)
+            if m is None:
+                continue
+            n_sub = int(m.sum())
+            (small_windows if n_sub < 100 else large_windows).append((t_s, t_e))
+
+        # ----------- Process small windows serially -----------
+        results = []
+        if small_windows:
+            print(f"[info] Processing {len(small_windows)} small windows serially ...")
+            for (t_s, t_e) in small_windows:
                 try:
-                    res = fut.result()
-                    results.append((ts, te, res))
+                    results.append((t_s, t_e, func(t_s, t_e)))
                 except Exception as e:
-                    print(f"[warn] Window ({ts},{te}) failed: {e}")
+                    print(f"[warn] Small window ({t_s},{t_e}) failed: {e}")
+
+        # ----------- Process large windows in parallel -----------
+        if large_windows:
+            if max_workers is None:
+                max_workers = min(4, os.cpu_count() // 4)
+            batch_size = max(50, min(100, len(large_windows) // max_workers))
+            print(f"[info] Launching {len(large_windows)} large windows in {max_workers} workers (batch={batch_size})")
+
+            batches = [large_windows[i:i + batch_size] for i in range(0, len(large_windows), batch_size)]
+            t_start = time.perf_counter()
+
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(_batch_compute_parallel, (self, func.__name__, batch)): batch for batch in batches}
+                for fut in as_completed(futures):
+                    try:
+                        batch_result = fut.result()
+                        results.extend(batch_result)
+                    except Exception as e:
+                        print(f"[warn] Batch failed: {e}")
+
+            t_end = time.perf_counter()
+            print(f"[info] Parallel large-window section completed in {t_end - t_start:.2f}s")
+
+        results.sort(key=lambda x: x[0])
+        print(f"[info] Completed {len(results)} total window computations.")
         return results
     
-def extract_cve_subgraph(G, k=2, min_cve_count=1):
-    ''' extract subgraph related to nodes with cve
-
-    - k: number of neighbor hop
-    - min_cve_count: the minimum number of CVE
     
-    '''
-    # find nodes with cves
-    cve_nodes = [n for n, d in G.nodes(data=True) if d.get("has_cve") or (d.get("cve_count", 0) >= min_cve_count)]
-    if not cve_nodes:
-        print("[warn] No CVE nodes found; returning original graph.")
-        return G
-    
-    print(f"[info] Found {len(cve_nodes)} CVE nodes; extracting {k}-hop neighborhood...")
-
-    # collect neighbors of cve node
-    keep_nodes = set()
-    for cve in cve_nodes:
-        keep_nodes.add(cve)
-        keep_nodes.update(nx.single_source_shortest_path_length(G, cve, cutoff=k).keys())
-
-    # generate subgraph
-    subG = G.subgraph(keep_nodes).copy()
-    print(f"[info] Reduced graph: {subG.number_of_nodes()} nodes, {subG.number_of_edges()} edges")
-
-    return subG
-
-
 if __name__ == "__main__":
 
     t0_total = time.perf_counter()
@@ -177,18 +234,17 @@ if __name__ == "__main__":
           f"(took {time.perf_counter() - t0:.2f}s)")
     
     # ---------- for quick debug ------------
-    # import random
-    # MAX_NODES = 1000  
-    # if depgraph.number_of_nodes() > MAX_NODES:
-    #     valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-    #     # random sampling
-    #     if len(valid_nodes) < MAX_NODES:
-    #         print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-    #         keep = valid_nodes
-    #     else:
-    #         keep = random.sample(valid_nodes, MAX_NODES)
-    #     depgraph = depgraph.subgraph(keep).copy()
-    #     print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+    MAX_NODES = 10000
+    if depgraph.number_of_nodes() > MAX_NODES:
+        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+        # random sampling
+        if len(valid_nodes) < MAX_NODES:
+            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+            keep = valid_nodes
+        else:
+            keep = random.sample(valid_nodes, MAX_NODES)
+        depgraph = depgraph.subgraph(keep).copy()
+        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
     # ---------------------------------------
 
     # initialize tempcentricity

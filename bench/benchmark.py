@@ -15,7 +15,7 @@ from cent.temp_cent_fast import TempCentricityOptimized
 from com.commdet import TemporalCommDetector
 from src.path_track import PathConfig, RootCausePathAnalyzer
 from search.vamana import VamanaSearch, CVEVector, VamanaOnCVE
-from cent.temp_cent_fast import extract_cve_subgraph
+from cve.graph_cve import extract_cve_subgraph
 
 # ------- import helper functions -------
 from eval.evaluation import _zscore, _rank_metrics, _lead_time, _pick_total
@@ -251,6 +251,14 @@ def benchmark_paths(
             latencies.append((time.perf_counter() - tic) * 1000.0)
             continue
 
+        if root_node not in depgraph:
+            print(f"[skip] root {root_node} not in depgraph window ({t_s}, {t_e})")
+            continue
+
+        # ---------- debug info ----------
+        ts_root = timestamps.get(root_node)
+        print(f"[check] root={root_node}, ts_root={ts_root}, window=({t_s}, {t_e}), in_depgraph={root_node in depgraph}")
+
         # assign pathconfig to every window
         pcfg = PathConfig(
             t_start = t_s,
@@ -272,6 +280,13 @@ def benchmark_paths(
             source = root_node
         )
 
+        if not paths_by_target:
+            print(f"[warn] No paths found for root {root_node}")
+            continue
+
+        print(list(paths_by_target.keys())[:3])
+        print(next(iter(paths_by_target.values())))
+
         # recrod frequency of nodes in paths
         node_score: Dict[Any, float] = {}
         for tgt, paths in paths_by_target.items():
@@ -292,6 +307,7 @@ def benchmark_paths(
 
         if ev:
             mrr, h3 = _rank_metrics(norm, ev["targets"])
+            print("[debug] targets:", ev["targets"])
             mrrs.append(mrr); h3s.append(h3)
             f1 = _f1_from_paths(paths_by_target, set(ev["targets"]))
             f1s.append(f1)
@@ -380,6 +396,7 @@ def benchmark_full(
 
         if ev:
             targets = set(ev["targets"])
+            print("[debug] targets:", targets)
             hit = 1.0 if (targets & root_nodes) else 0.0
             cov = (len(targets & root_nodes) / len(targets)) if targets else 0.0
             hit_comm_flags.append(hit); coverages.append(cov) 
@@ -391,6 +408,11 @@ def benchmark_full(
         path_scores: Dict[Any, float] = {}
         paths_by_target = {}
         if root_node is not None:
+            
+            # ---------- debug info ----------
+            ts_root = timestamps.get(root_node)
+            print(f"[check] root={root_node}, ts_root={ts_root}, window=({t_s}, {t_e}), in_depgraph={root_node in depgraph}")
+
             pcfg = PathConfig(
                 t_start = float(pd.Timestamp(t_s).timestamp()),
                 t_end = float(pd.Timestamp(t_e).timestamp()),
@@ -409,6 +431,13 @@ def benchmark_full(
                 explain=False,
                 source=root_node
             )
+
+            if not paths_by_target:
+                print(f"[warn] No paths found for root {root_node}")
+                continue
+
+            print(list(paths_by_target.keys())[:3])
+            print(next(iter(paths_by_target.values())))
 
             for _t, paths in (paths_by_target or {}).items():
                 for p in paths:
@@ -453,14 +482,8 @@ def pick_root_in_window(cands_sorted, t_s_ms, t_e_ms):
     i = bisect.bisect_left(cands_sorted, (t_s_ms, ""))
     j = bisect.bisect_left(cands_sorted, (t_e_ms, ""))
 
-    if i<j:
-        # choose max ts within a time window
-        return cands_sorted[j-1][1]
-    
-    k = i - 1
-    if k >= 0:
-        return cands_sorted[k][1]
-
+    if i < j:
+        return cands_sorted[j - 1][1]
     return None
 
 def load_ground_truth(args):
@@ -525,19 +548,22 @@ def main():
     # ---------- load dependency graph -----------
     with dep_path.open("rb") as f:
         depgraph = pickle.load(f)
+    
+    # control graph to subgraph stick to node with cve
+    print(f"[info] Graph loaded: {depgraph.number_of_nodes()} nodes, {depgraph.number_of_edges()} edges")
 
     # ----------- for quick test ---------
-    # MAX_NODES = 1000  
-    # if depgraph.number_of_nodes() > MAX_NODES:
-    #     valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-    #     # random sampling
-    #     if len(valid_nodes) < MAX_NODES:
-    #         print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-    #         keep = valid_nodes
-    #     else:
-    #         keep = random.sample(valid_nodes, MAX_NODES)
-    #     depgraph = depgraph.subgraph(keep).copy()
-    #     print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+    MAX_NODES = 100000
+    if depgraph.number_of_nodes() > MAX_NODES:
+        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+        # random sampling
+        if len(valid_nodes) < MAX_NODES:
+            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+            keep = valid_nodes
+        else:
+            keep = random.sample(valid_nodes, MAX_NODES)
+        depgraph = depgraph.subgraph(keep).copy()
+        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
 
     # -------------- candiate ---------------
     candidates = []
@@ -545,8 +571,11 @@ def main():
         ts = d.get("timestamp")
         if ts is None:
             continue
-        if d.get("is_source", True):
+        if d.get("has_cve") or d.get("cve_count", 0) >= 1:
             candidates.append((int(ts), n))
+    # sort with increasing timestamp
+    candidates.sort()
+    print(f"[info] {len(candidates)} CVE-based candidates selected as potential roots")
 
     # ---------- load nodeid_to_texts & cve_records_for_meta -----------
     nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
@@ -616,8 +645,6 @@ def main():
                 _to_float_time(_to_same_type(t_eval_mid, ref_type)) * 1000.0,                
                 )
 
-    # control graph to subgraph stick to node with cve
-    depgraph = extract_cve_subgraph(depgraph, k = 2)
 
     # --------- Run Benchmarks ---------
     all_metrics = {}

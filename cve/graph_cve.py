@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 from utils.util import _safe_load_json, _safe_load_pickle, _safe_save_pickle
 from utils.util import _as_node_catalog, _detect_graph_nodes_and_edges
-
+import networkx as nx 
 
 # ----------- Data Class ------------
 @dataclass
@@ -42,6 +42,32 @@ class CVERecord:
     outdegree: Optional[int] = None
 
 
+def extract_cve_subgraph(G, k=2, min_cve_count=1):
+    ''' extract subgraph related to nodes with cve
+
+    - k: number of neighbor hop
+    - min_cve_count: the minimum number of CVE
+    
+    '''
+    # find nodes with cves
+    cve_nodes = [n for n, d in G.nodes(data=True) if d.get("has_cve") or (d.get("cve_count", 0) >= min_cve_count)]
+    if not cve_nodes:
+        print("[warn] No CVE nodes found; returning original graph.")
+        return G
+    
+    print(f"[info] Found {len(cve_nodes)} CVE nodes; extracting {k}-hop neighborhood...")
+
+    # collect neighbors of cve node
+    keep_nodes = set()
+    for cve in cve_nodes:
+        keep_nodes.add(cve)
+        keep_nodes.update(nx.single_source_shortest_path_length(G, cve, cutoff=k).keys())
+
+    # generate subgraph
+    subG = G.subgraph(keep_nodes).copy()
+    print(f"[info] Reduced graph: {subG.number_of_nodes()} nodes, {subG.number_of_edges()} edges")
+
+    return subG
 
 # ----------- Core Logic ----------------
 def build_nodeid_to_release(nodes_edges_obj: Any) -> Dict[str, Optional[str]]:

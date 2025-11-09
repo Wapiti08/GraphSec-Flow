@@ -23,6 +23,10 @@ import scipy.sparse as sp
 from typing import List, Tuple, Optional, Dict, Callable
 from scipy.sparse.linalg import eigsh
 import time
+from cve.graph_cve import extract_cve_subgraph
+import random
+
+random.seed(42)
 
 try:
     from joblib import Parallel, delayed
@@ -418,34 +422,34 @@ def probe_topk_r_candidates(obj, r_candidates, topk=5, agg="sum", n_jobs=-1):
         return tuple(r for r, _ in scored[:topk])
     
 # -------------------- convenience wrapper example --------------------
-# def make_build_series_fn(tempcent_obj, agg_fn: Callable[[Dict], float]):
-#     """
-#     Returns a callable build_series_fn(win_size, step_size) that uses
-#     TempCentricity implementation and aggregation to produce a scalar series.
-#     tempcent_obj must implement .eigenvector_centrality(t_s, t_e)
-#     agg_fn maps from {node: centrality} -> scalar.
-#     """
-#     def build_series(win_size: float, step_size: float):
-#         # discover time range from underlying graph inside tempcent_obj if available
-#         G = getattr(tempcent_obj, "G", None) or getattr(tempcent_obj, "graph", None)
-#         if G is None:
-#             raise ValueError("tempcent_obj must carry the underlying graph as attribute G or graph.")
-#         ts_all = sorted(float(d.get("timestamp", 0)) for _, d in G.nodes(data=True) if d.get("timestamp", None) is not None)
-#         if not ts_all:
-#             return np.asarray([]), np.asarray([])
-#         t_min, t_max = ts_all[0], ts_all[-1]
-#         # sliding windows
-#         t = t_min
-#         centers, scalars = [], []
-#         while t < t_max:
-#             t_s, t_e = t, t + float(win_size)
-#             pr = tempcent_obj.eigenvector_centrality(t_s=t_s, t_e=t_e)
-#             if pr:
-#                 centers.append((t_s + t_e) / 2.0)
-#                 scalars.append(float(agg_fn(pr)))
-#             t += float(step_size)
-#         return np.asarray(centers, dtype=float), np.asarray(scalars, dtype=float)
-#     return build_series
+def make_build_series_fn(tempcent_obj, agg_fn: Callable[[Dict], float]):
+    """
+    Returns a callable build_series_fn(win_size, step_size) that uses
+    TempCentricity implementation and aggregation to produce a scalar series.
+    tempcent_obj must implement .eigenvector_centrality(t_s, t_e)
+    agg_fn maps from {node: centrality} -> scalar.
+    """
+    def build_series(win_size: float, step_size: float):
+        # discover time range from underlying graph inside tempcent_obj if available
+        G = getattr(tempcent_obj, "G", None) or getattr(tempcent_obj, "graph", None)
+        if G is None:
+            raise ValueError("tempcent_obj must carry the underlying graph as attribute G or graph.")
+        ts_all = sorted(float(d.get("timestamp", 0)) for _, d in G.nodes(data=True) if d.get("timestamp", None) is not None)
+        if not ts_all:
+            return np.asarray([]), np.asarray([])
+        t_min, t_max = ts_all[0], ts_all[-1]
+        # sliding windows
+        t = t_min
+        centers, scalars = [], []
+        while t < t_max:
+            t_s, t_e = t, t + float(win_size)
+            pr = tempcent_obj.eigenvector_centrality(t_s=t_s, t_e=t_e)
+            if pr:
+                centers.append((t_s + t_e) / 2.0)
+                scalars.append(float(agg_fn(pr)))
+            t += float(step_size)
+        return np.asarray(centers, dtype=float), np.asarray(scalars, dtype=float)
+    return build_series
 
 
 def make_build_series_fn_warm(tempcent_obj: TempCentricity, agg_fn, max_iter=150, tol=1e-4):
@@ -471,8 +475,8 @@ def make_build_series_fn_warm(tempcent_obj: TempCentricity, agg_fn, max_iter=150
         # parallel compute all windows
         results = tempcent_obj.compute_series_parallel(
             window_list, 
-            mode="eigenvector",     # 你也可以改成 "eigenvector" 
-            max_workers=256      # 根据CPU核数调整
+            mode="eigenvector",     
+            max_workers=256      
         )
 
         # aggregate results
@@ -494,30 +498,32 @@ if __name__ == "__main__":
     t0_total = time.perf_counter()
 
     # data path
-    depdata_path = Path.cwd().parent.joinpath("data", "dep_graph.pkl")
+    cve_depdata_path = Path.cwd().parent.joinpath("data", "dep_graph_cve.pkl")
 
     t0 = time.perf_counter()
     # load the graph
-    with depdata_path.open('rb') as fr:
+    with cve_depdata_path.open('rb') as fr:
         depgraph = pickle.load(fr)
+    
+    # use subgraph for calculation
+    depgraph = extract_cve_subgraph(depgraph, k =2)
 
     print(f"[info] Graph loaded: {depgraph.number_of_nodes()} nodes, "
           f"{depgraph.number_of_edges()} edges "
           f"(took {time.perf_counter() - t0:.2f}s)")
     
     # ---------- for quick debug ------------
-    # import random
-    # MAX_NODES = 1000  
-    # if depgraph.number_of_nodes() > MAX_NODES:
-    #     valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-    #     # random sampling
-    #     if len(valid_nodes) < MAX_NODES:
-    #         print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-    #         keep = valid_nodes
-    #     else:
-    #         keep = random.sample(valid_nodes, MAX_NODES)
-    #     depgraph = depgraph.subgraph(keep).copy()
-    #     print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+    MAX_NODES = 100000
+    if depgraph.number_of_nodes() > MAX_NODES:
+        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
+        # random sampling
+        if len(valid_nodes) < MAX_NODES:
+            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
+            keep = valid_nodes
+        else:
+            keep = random.sample(valid_nodes, MAX_NODES)
+        depgraph = depgraph.subgraph(keep).copy()
+        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
 
     # ---------------------------------------
 
@@ -530,9 +536,9 @@ if __name__ == "__main__":
     # ------------- build_series_fn -------------
     t2 = time.perf_counter()
 
-    build_series_fn = make_build_series_fn_warm(tempcent, 
-                                                agg_fn=lambda pr: agg_network_influence(pr, method="entropy"),
-                                                max_iter=150, tol=3e-4)
+    build_series_fn = make_build_series_fn(tempcent, 
+                                            agg_fn=lambda pr: agg_network_influence(pr, method="entropy"),
+                                            )
     print(f"[info] build_series_fn constructed (took {time.perf_counter() - t2:.2f}s)")
     
     # ------------- coarse-to-fine r search -----------------
