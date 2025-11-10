@@ -64,3 +64,31 @@ def _f1_from_paths(paths_dict, targets: Set)-> float:
     rec = tp / (tp + fn) if (tp + fn) > 0 else 0.0
 
     return (2 * prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
+
+def path_f1_partial_match(gt_paths, pred_paths, overlap_thresh=0.5):
+    """
+    Compute Path-F1 with partial matching (by node overlap).
+    """
+    tp = 0
+    fp = 0
+    fn = 0
+
+    for p_pred in pred_paths:
+        pred_nodes = set(p_pred)
+        matched = False
+        for p_gt in gt_paths:
+            gt_nodes = set(p_gt)
+            overlap = len(pred_nodes & gt_nodes) / len(pred_nodes | gt_nodes)
+            if overlap >= overlap_thresh:
+                tp += 1
+                matched = True
+                break
+        if not matched:
+            fp += 1
+
+    fn = len(gt_paths) - tp
+
+    precision = tp / (tp + fp + 1e-9)
+    recall = tp / (tp + fn + 1e-9)
+    f1 = 2 * precision * recall / (precision + recall + 1e-9)
+    return f1

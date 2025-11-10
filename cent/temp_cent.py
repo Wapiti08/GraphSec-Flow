@@ -513,7 +513,7 @@ if __name__ == "__main__":
           f"(took {time.perf_counter() - t0:.2f}s)")
     
     # ---------- for quick debug ------------
-    MAX_NODES = 100000
+    MAX_NODES = 10000
     if depgraph.number_of_nodes() > MAX_NODES:
         valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
         # random sampling

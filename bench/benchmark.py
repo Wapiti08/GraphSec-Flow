@@ -28,7 +28,7 @@ from cve.cveinfo import osv_cve_api
 from eval.events import _first_cve_data_of_node, _last_cve_data_of_node, _to_same_type, _to_float_time
 from datetime import datetime, timedelta
 import pandas as pd
-from bench.helper import load_cached_scores, _safe_node_timestamps, _mask_or_fill, _f1_from_paths
+from bench.helper import load_cached_scores, _safe_node_timestamps, _mask_or_fill, _f1_from_paths, path_f1_partial_match
 import bisect
 import argparse
 
@@ -214,6 +214,8 @@ def benchmark_paths(
         strict_increase: bool=False,
         candidates: list=None,
         window_size: int=10,
+        ground_truth: list=None,   
+
     ):
     ''' 
     automatically identify root source, construct temporal graph and weight edges,
@@ -307,10 +309,34 @@ def benchmark_paths(
 
         if ev:
             mrr, h3 = _rank_metrics(norm, ev["targets"])
-            print("[debug] targets:", ev["targets"])
             mrrs.append(mrr); h3s.append(h3)
-            f1 = _f1_from_paths(paths_by_target, set(ev["targets"]))
-            f1s.append(f1)
+
+            # existing strict F1
+            f1_strict = _f1_from_paths(paths_by_target, set(ev["targets"]))
+            # new partial match F1
+            # extract predicted paths from paths_by_target
+            predicted_paths = [p for paths in paths_by_target.values() for p in paths]
+
+            # --- Build ground truth paths ---
+            if ground_truth is not None:
+                # extract true paths related to this root or window
+                gt_paths = []
+                for item in ground_truth:
+                    p = item.get("path")
+                    if not p:
+                        continue
+                    # optional: filter by time or root match if available
+                    root_id = str(item.get("root_id", ""))
+                    if root_node == root_id:
+                        gt_paths.append(p)
+            else:
+                # fallback: use event targets as pseudo-GT
+                gt_paths = [[t] for t in ev["targets"]]
+
+            f1_partial = path_f1_partial_match(gt_paths, predicted_paths, overlap_thresh=0.5)
+
+            print(f"[Eval] F1(strict)={f1_strict:.3f}, F1(partial)={f1_partial:.3f}")
+            f1s.append(f1_partial)            
 
     return {
         "Path": {
@@ -340,6 +366,7 @@ def benchmark_full(
     strict_increase: bool=False,
     fuse_lambda: float = 0.6,
     window_size: int=10,
+    ground_truth: list=None,   
     ):
     ''' Full benchmark with community detection + path finding + aggregation
     
@@ -396,7 +423,6 @@ def benchmark_full(
 
         if ev:
             targets = set(ev["targets"])
-            print("[debug] targets:", targets)
             hit = 1.0 if (targets & root_nodes) else 0.0
             cov = (len(targets & root_nodes) / len(targets)) if targets else 0.0
             hit_comm_flags.append(hit); coverages.append(cov) 
@@ -436,9 +462,6 @@ def benchmark_full(
                 print(f"[warn] No paths found for root {root_node}")
                 continue
 
-            print(list(paths_by_target.keys())[:3])
-            print(next(iter(paths_by_target.values())))
-
             for _t, paths in (paths_by_target or {}).items():
                 for p in paths:
                     for v in p:
@@ -461,7 +484,32 @@ def benchmark_full(
         if ev:
             mrr, h3 = _rank_metrics(norm, ev["targets"])
             mrrs.append(mrr); h3s.append(h3)
-            f1s.append(_f1_from_paths(paths_by_target, set(ev["targets"])))
+
+            # existing strict F1
+            f1_strict = _f1_from_paths(paths_by_target, set(ev["targets"]))
+
+            # new partial match F1
+            # extract predicted paths from paths_by_target
+            predicted_paths = [p for paths in paths_by_target.values() for p in paths]
+            if ground_truth is not None:
+                # extract true paths related to this root or window
+                gt_paths = []
+                for item in ground_truth:
+                    p = item.get("path")
+                    if not p:
+                        continue
+                    # optional: filter by time or root match if available
+                    root_id = str(item.get("root_id", ""))
+                    if root_node == root_id:
+                        gt_paths.append(p)
+            else:
+                # fallback: use event targets as pseudo-GT
+                gt_paths = [[t] for t in ev["targets"]]
+            
+            f1_partial = path_f1_partial_match(gt_paths, predicted_paths, overlap_thresh=0.5)
+
+            print(f"[Eval-Full] F1(strict)={f1_strict:.3f}, F1(partial)={f1_partial:.3f}")
+            f1s.append(f1_partial)    
 
     return {
         "Full": {
@@ -548,6 +596,9 @@ def main():
     # ---------- load dependency graph -----------
     with dep_path.open("rb") as f:
         depgraph = pickle.load(f)
+
+    # use subgraph for calculation
+    depgraph = extract_cve_subgraph(depgraph, k =2)
     
     # control graph to subgraph stick to node with cve
     print(f"[info] Graph loaded: {depgraph.number_of_nodes()} nodes, {depgraph.number_of_edges()} edges")
@@ -671,13 +722,19 @@ def main():
 
     # path & full
     pathm = benchmark_paths(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
-                            k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, candidates=candidates)
+                            k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, 
+                            candidates=candidates,
+                            ground_truth=gt_layer if gt_layer else gt_normal,
+                            )
     all_metrics.update(pathm)
     print("[info] Path benchmark done")
     print("current metrics:", all_metrics)
 
     fullm = benchmark_full(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
-                           k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, fuse_lambda=0.6)
+                           k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, 
+                           fuse_lambda=0.6,
+                            ground_truth=gt_layer if gt_layer else gt_normal,
+                            )
     all_metrics.update(fullm)
 
     print(all_metrics)
@@ -694,13 +751,15 @@ def main():
 
         if gt_layer:
             gt_targets = collect_targets(gt_layer)
-            f1_fam = _f1_from_paths(predicted_paths, gt_targets)
-            print(f"[Eval] F1 vs FAMILY ground truth = {f1_fam:.3f}")
+            f1_layer_strict = _f1_from_paths(predicted_paths, gt_targets)
+            f1_layer_partial = path_f1_partial_match(gt_targets, predicted_paths, overlap_thresh=0.5)
+            print(f"[Eval-Layer] F1(strict)={f1_layer_strict:.3f}, F1(partial)={f1_layer_partial:.3f}")
 
         if gt_normal:
             gt_targets = collect_targets(gt_normal)
-            f1_norm = _f1_from_paths(predicted_paths, gt_targets)
-            print(f"[Eval] F1 vs NORMAL ground truth = {f1_norm:.3f}")
+            f1_norm_strict = _f1_from_paths(predicted_paths, gt_targets)
+            f1_norm_partial = path_f1_partial_match(gt_targets, predicted_paths, overlap_thresh=0.5)
+            print(f"[Eval-Normal] F1(strict)={f1_norm_strict:.3f}, F1(partial)={f1_norm_partial:.3f}")
 
     print("\n=== [4] Benchmark Completed ===")
 

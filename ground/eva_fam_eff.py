@@ -98,8 +98,8 @@ if __name__ == "__main__":
     out_paths = "/workspace/GraphSec-Flow/data/ref_paths.jsonl"
 
     print("\n=== [4b] Build Ground Truth (Layer-Based Search Mode) ===")
-    ref_path_layer = out_paths.replace(".jsonl", "_layer_6.jsonl")
-    root_path_layer = out_root.replace(".jsonl", "_layer_6.jsonl")
+    ref_path_layer = out_paths.replace(".jsonl", "_layer_subgraph_6.jsonl")
+    root_path_layer = out_root.replace(".jsonl", "_layer_subgraph_6.jsonl")
 
     start = time.time()
     env_layer = {**os.environ, "LAYER_MODE": "1"}

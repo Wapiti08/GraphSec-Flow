@@ -157,7 +157,12 @@ class TempCentricityOptimized(TempCentricity):
             print("[warn] No windows provided.")
             return []
         
-        func = self.degree_centrality_fast if mode == "degree" else self.eigenvector_centrality_fast
+        if mode == "degree":
+            func_name = "degree_centrality_fast"
+        else:
+            func_name = "eigenvector_centrality_fast"
+
+        func = getattr(self, func_name)
 
         # ----------- Estimate window sizes -----------
         sizes = []
@@ -198,7 +203,7 @@ class TempCentricityOptimized(TempCentricity):
             t_start = time.perf_counter()
 
             with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = {ex.submit(_batch_compute_parallel, (self, func.__name__, batch)): batch for batch in batches}
+                futures = {ex.submit(_batch_compute_parallel, (self, func_name, batch)): batch for batch in batches}
                 for fut in as_completed(futures):
                     try:
                         batch_result = fut.result()
@@ -234,7 +239,7 @@ if __name__ == "__main__":
           f"(took {time.perf_counter() - t0:.2f}s)")
     
     # ---------- for quick debug ------------
-    MAX_NODES = 10000
+    MAX_NODES = 100000
     if depgraph.number_of_nodes() > MAX_NODES:
         valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
         # random sampling

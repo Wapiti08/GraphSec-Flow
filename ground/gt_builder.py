@@ -29,6 +29,7 @@ from ground.helper import _extract_coords_from_node, _pkg_key_from_artifact
 from ground.helper import _norm_pkg, _build_pkg_index, _resolve_root_ids, resolve_package_name
 from depdata.ana_fam_merge import debug_families
 from ground.fuzzy_search import layer_based_search
+from cve.graph_cve import extract_cve_subgraph
 import argparse
 import json
 import re
@@ -695,6 +696,8 @@ if __name__ == "__main__":
             ap.error("--dep-graph is required unless --smoke-test is used.")
 
         loaded_graph = _safe_load_pickle(Path(args.dep_graph))
+        # cve subgraph extraction
+        loaded_graph = extract_cve_subgraph(loaded_graph)
 
         # --- Ensure type compatibility ---
         if not isinstance(loaded_graph, DepGraph):
