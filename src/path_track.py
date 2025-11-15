@@ -297,9 +297,15 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
         Each node must carry a numeric 'timestamp' attribute. For any undirected
         edge {u, v}, we add directed edges according to timestamps:
         '''
-        if t_start is None: t_start = float('-inf')
-        if t_end is None: t_end = float('inf')
-
+        if t_start is None or t_end is None:
+            # if the window size is too narrow, automatically increase
+            all_ts = [d.get("timestamp") for _, d in G_undirected.nodes(data=True) if "timestamp" in d]
+            if all_ts:
+                t_min, t_max = min(all_ts), max(all_ts)
+                t_start = min(t_start or t_min, t_min)
+                t_end   = max(t_end or t_max, t_max)
+                print(f"[debug][expand] Temporal window expanded to [{t_start}, {t_end}]")
+        
         # filter nodes by timestamp presence + range
         allowed = []
         for n, d in G_undirected.nodes(data=True):
@@ -318,13 +324,27 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
 
             if tsu is None or tsv is None:
                 continue
+            # if strict_increase:
+            #     if tsu < tsv: D.add_edge(u, v, time_lag = tsv - tsu)
+            #     if tsv < tsu: D.add_edge(v, u, time_lag = tsu - tsv)
+            # else:
+            #     if tsu <= tsv: D.add_edge(u, v, time_lag = tsv - tsu)
+            #     if tsv <= tsu: D.add_edge(v ,u, time_lag = tsu - tsv)
+
             if strict_increase:
-                if tsu < tsv: D.add_edge(u, v, time_lag = tsv - tsu)
-                if tsv < tsu: D.add_edge(v, u, time_lag = tsu - tsv)
+                if tsu < tsv:
+                    D.add_edge(u, v, time_lag=tsv - tsu)
             else:
-                if tsu <= tsv: D.add_edge(u, v, time_lag = tsv - tsu)
-                if tsv <= tsu: D.add_edge(v ,u, time_lag = tsu - tsv)
-        
+                if tsu < tsv:
+                    D.add_edge(u, v, time_lag=tsv - tsu)
+
+        print(f"[debug] Root {source} out_degree={D.out_degree(source)}, in_degree={D.in_degree(source)}")
+        print(f"[debug] Out edges from root: {list(D.out_edges(source))[:10]}")
+        print(f"[debug] In edges to root: {list(D.in_edges(source))[:10]}")
+                
+        print(f"[debug][build] D has {D.number_of_nodes()} nodes, {D.number_of_edges()} edges")
+        print(f"[debug][build] Sample edges: {list(D.edges())[:10]}")
+        print(f"[debug][build] Root {list(G_undirected.nodes())[0]} ts={G_undirected.nodes[list(G_undirected.nodes())[0]].get('timestamp')}")
         return D
 
     # ---------- compute paths based on root cause -----------
@@ -351,15 +371,23 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
                 t_end=cfg.t_end
             )
 
-        # =========== for debug ===========
-        src_in_dep = source in self.depgraph
-        src_in_D = source in D
-        src_ts = None
-        try:
-            src_ts = self.depgraph.nodes[source].get("timestamp")
-        except Exception:
-            pass
-        print(f"[debug] source in depgraph? {src_in_dep}, in D? {src_in_D}, timestamp={src_ts}")
+        # [A] ensure root in graph
+        if source not in D:
+            print(f"[warn] Root {source} missing in D, adding it back.")
+            D.add_node(source, **dep.nodes[source])
+
+        # [B] fallback if empty
+        if D.number_of_edges() == 0:
+            print(f"[debug][fallback] No edges found in temporal graph, building relaxed static graph.")
+            for u, v in G_und.edges():
+                tsu = G_und.nodes[u].get("timestamp")
+                tsv = G_und.nodes[v].get("timestamp")
+                if tsu is None or tsv is None:
+                    continue
+                if tsu <= tsv:
+                    D.add_edge(u, v, time_lag=tsv - tsu)
+                else:
+                    D.add_edge(v, u, time_lag=tsu - tsv)
 
         if source not in D:
             # Diagnose
@@ -390,7 +418,13 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
             targets = [t for t in cfg.targets if t in D and t != source]
         else:
             # choose nodes without outgoing edges (leaf nodes)
-            targets = [n for n in D.nodes if D.out_degree(n) == 0 and n != source]
+            # targets = [n for n in D.nodes if D.out_degree(n) == 0 and n != source]
+            targets = []
+            for n in D.nodes:
+                if n != source and nx.has_path(D, source, n):
+                    targets.append(n)
+
+        print(f"[debug] Found {len(targets)} targets (leaf nodes): {targets[:10]}")
         
         # 4) compute weights
         centrality = nx.degree_centrality(D) if cfg.beta != 0.0 else None
@@ -401,6 +435,7 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
         
         # 5) K shortest paths
         paths_by_t = k_shortest_paths(D, source, targets, k=cfg.k_paths)
+        print(f"[debug] paths_by_t: { {k: len(v) for k,v in paths_by_t.items()} }")
         return D, paths_by_t
 
     # ------- entry point: root cause + path --------
@@ -573,10 +608,8 @@ def main():
     max_nodes = 1000
     random.seed(0)
 
-    # 仅考虑带 timestamp 的节点，避免后面再额外删一遍
     candidates = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
 
-    # 从参数里收集种子
     if getattr(args, "source", None) and args.source in depgraph and "timestamp" in depgraph.nodes[args.source]:
         seeds.append(args.source)
 
@@ -585,7 +618,6 @@ def main():
 
     keep = set(seeds)
 
-    # 如果没给 source/targets，则回退到合理的默认集合
     if not keep:
         if len(candidates) == 0:
             raise ValueError("Graph has no nodes with 'timestamp'; nothing to keep.")

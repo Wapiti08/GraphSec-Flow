@@ -65,20 +65,26 @@ def _f1_from_paths(paths_dict, targets: Set)-> float:
 
     return (2 * prec * rec) / (prec + rec) if (prec + rec) > 0 else 0.0
 
-def path_f1_partial_match(gt_paths, pred_paths, overlap_thresh=0.5):
+def path_f1_partial_match(gt_paths, pred_paths, overlap_thresh=0.5, mode="jaccard"):
     """
     Compute Path-F1 with partial matching (by node overlap).
+    Supports 'jaccard' or 'gt_recall' overlap mode.
     """
-    tp = 0
-    fp = 0
-    fn = 0
+    if not gt_paths or not pred_paths:
+        return 0.0
 
+    tp = fp = 0
     for p_pred in pred_paths:
         pred_nodes = set(p_pred)
         matched = False
         for p_gt in gt_paths:
             gt_nodes = set(p_gt)
-            overlap = len(pred_nodes & gt_nodes) / len(pred_nodes | gt_nodes)
+            if not gt_nodes:
+                continue
+            if mode == "gt_recall":
+                overlap = len(pred_nodes & gt_nodes) / len(gt_nodes)
+            else:
+                overlap = len(pred_nodes & gt_nodes) / len(pred_nodes | gt_nodes)
             if overlap >= overlap_thresh:
                 tp += 1
                 matched = True
@@ -86,8 +92,7 @@ def path_f1_partial_match(gt_paths, pred_paths, overlap_thresh=0.5):
         if not matched:
             fp += 1
 
-    fn = len(gt_paths) - tp
-
+    fn = max(0, len(gt_paths) - tp)
     precision = tp / (tp + fp + 1e-9)
     recall = tp / (tp + fn + 1e-9)
     f1 = 2 * precision * recall / (precision + recall + 1e-9)

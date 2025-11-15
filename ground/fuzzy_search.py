@@ -93,7 +93,7 @@ def layer_based_search(G, root, cve_meta, family_index=None, max_depth=6, sample
         node_data = G.nodes[n]
         # example of node: 
         """
-        Node(id='n2905925', package='org.opendaylight.bgpcep:features-aggregator-bgpcep-extras', version='0.8.0', time=datetime.datetime(2017, 9, 19, 21, 6, 44))
+        Node(id='n2905925', package='org.opendaylight.bgpcep:features-aggregator-bgpcep-extras', version='0.8.0', time=datetime.datetime(2017, 9, 19, 21, 3, 44))
         """
         # Case 1: DepGraph Node object
         if hasattr(node_data, "package"):
@@ -254,6 +254,9 @@ def layer_based_search(G, root, cve_meta, family_index=None, max_depth=6, sample
         for nbr in iter_successors(G, node):
             if nbr in visited:
                 continue
+            if depth + 1 > max_depth:
+                continue
+
             visited.add(nbr)
             new_path = path + [nbr]
             pkg = get_node_pkg(nbr)

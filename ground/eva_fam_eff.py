@@ -41,7 +41,6 @@ def evaluate_family_merge(depgraph_path, cve_meta_path, out_root, out_paths):
     G = _safe_load_pickle(Path(depgraph_path))
     print(f"[Graph] nodes={len(G):,}, edges={len(G.edges):,}")
 
-    # 输出路径
     ref_path_before = out_paths
     ref_path_after = out_paths.replace(".jsonl", "_family.jsonl")
     root_path_after = out_root.replace(".jsonl", "_family.jsonl")
@@ -98,8 +97,8 @@ if __name__ == "__main__":
     out_paths = "/workspace/GraphSec-Flow/data/ref_paths.jsonl"
 
     print("\n=== [4b] Build Ground Truth (Layer-Based Search Mode) ===")
-    ref_path_layer = out_paths.replace(".jsonl", "_layer_subgraph_6.jsonl")
-    root_path_layer = out_root.replace(".jsonl", "_layer_subgraph_6.jsonl")
+    ref_path_layer = out_paths.replace(".jsonl", "_layer_subgraph_right_6.jsonl")
+    root_path_layer = out_root.replace(".jsonl", "_layer_subgraph_right_6.jsonl")
 
     start = time.time()
     env_layer = {**os.environ, "LAYER_MODE": "1"}

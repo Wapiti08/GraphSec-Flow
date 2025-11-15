@@ -697,7 +697,7 @@ if __name__ == "__main__":
 
         loaded_graph = _safe_load_pickle(Path(args.dep_graph))
         # cve subgraph extraction
-        loaded_graph = extract_cve_subgraph(loaded_graph)
+        loaded_graph = extract_cve_subgraph(loaded_graph, k =6)
 
         # --- Ensure type compatibility ---
         if not isinstance(loaded_graph, DepGraph):

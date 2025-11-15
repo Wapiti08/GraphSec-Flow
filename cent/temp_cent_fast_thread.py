@@ -150,10 +150,7 @@ class TempCentricityOptimized(TempCentricity):
     
     # ------------ Adaptive Parallel Temporal Series -------------
     def compute_series_parallel(self, window_list, mode="eigenvector", max_workers=None):
-        '''
-        Single-thread Python loop + Numba internal parallelism.
-        Simplified and faster than ThreadPool/ProcessPool for CPU-heavy tasks.
-        '''
+        n_nodes = self._A.shape[0]
         n_windows = len(window_list)
         if n_windows == 0:
             print("[warn] No windows provided.")
@@ -166,7 +163,7 @@ class TempCentricityOptimized(TempCentricity):
 
         func = getattr(self, func_name)
 
-        # ---- Estimate typical window size ----
+        # ----------- Estimate window sizes -----------
         sizes = []
         for (t_s, t_e) in window_list[:min(50, len(window_list))]:
             m, L, R = self._mask_for_window(t_s, t_e)
@@ -175,21 +172,49 @@ class TempCentricityOptimized(TempCentricity):
         if sizes:
             print(f"[debug] Avg window size: {np.mean(sizes):.1f}, median: {np.median(sizes):.1f}")
 
+        # ----------- Partition windows by size -----------
+        small_windows, large_windows = [], []
+        for (t_s, t_e) in window_list:
+            m, L, R = self._mask_for_window(t_s, t_e)
+            if m is None:
+                continue
+            n_sub = int(m.sum())
+            (small_windows if n_sub < 100 else large_windows).append((t_s, t_e))
+
+        # ----------- Process small windows serially -----------
         results = []
-        t_start = time.perf_counter()
+        if small_windows:
+            print(f"[info] Processing {len(small_windows)} small windows serially ...")
+            for (t_s, t_e) in small_windows:
+                try:
+                    results.append((t_s, t_e, func(t_s, t_e)))
+                except Exception as e:
+                    print(f"[warn] Small window ({t_s},{t_e}) failed: {e}")
 
-        for idx, (t_s, t_e) in enumerate(window_list):
-            try:
-                res = func(t_s, t_e)
-                results.append((t_s, t_e, res))
-            except Exception as e:
-                print(f"[warn] Window ({t_s},{t_e}) failed: {e}")
-            if idx % 50 == 0 and idx > 0:
-                print(f"[progress] processed {idx}/{n_windows} windows ...")
+        # ----------- Process large windows in parallel -----------
+        if large_windows:
+            if max_workers is None:
+                max_workers = min(4, os.cpu_count() // 4)
+            batch_size = max(50, min(100, len(large_windows) // max_workers))
+            print(f"[info] Launching {len(large_windows)} large windows in {max_workers} workers (batch={batch_size})")
 
-        t_end = time.perf_counter()
-        print(f"[info] Completed {len(results)} windows in {t_end - t_start:.2f}s "
-              f"({(t_end - t_start)/max(n_windows,1):.3f}s per window)")
+            batches = [large_windows[i:i + batch_size] for i in range(0, len(large_windows), batch_size)]
+            t_start = time.perf_counter()
+
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = {ex.submit(_batch_compute_parallel, (self, func_name, batch)): batch for batch in batches}
+                for fut in as_completed(futures):
+                    try:
+                        batch_result = fut.result()
+                        results.extend(batch_result)
+                    except Exception as e:
+                        print(f"[warn] Batch failed: {e}")
+
+            t_end = time.perf_counter()
+            print(f"[info] Parallel large-window section completed in {t_end - t_start:.2f}s")
+
+        results.sort(key=lambda x: x[0])
+        print(f"[info] Completed {len(results)} total window computations.")
         return results
     
     
@@ -213,7 +238,7 @@ if __name__ == "__main__":
           f"(took {time.perf_counter() - t0:.2f}s)")
     
     # ---------- for quick debug ------------
-    MAX_NODES = 1000
+    MAX_NODES = 100000
     if depgraph.number_of_nodes() > MAX_NODES:
         valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
         # random sampling
