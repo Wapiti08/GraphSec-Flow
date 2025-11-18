@@ -43,45 +43,46 @@ def _rank_metrics(scores: Dict, targets):
 
 
 def _lead_time(series_scores, events, thresh=0.8):
-    ''' Compute the amount of time before a node is detected 
-    (score exceeds threshold) "before an event occurs"
-    
-    args:
-        series_scores: [(t_eval, {node: zscore})...]
-    '''
+    """
+    LeadTime = event_time − first detection time (only if first < event_time)
+    If detection happens after the event -> not counted as lead.
+    """
+
     from collections import defaultdict
 
     node2ts = defaultdict(list)
 
-    # flatten series
+    # flatten scores: node -> [(timestamp, zscore), ...]
     for t, sc in series_scores:
         for n, v in sc.items():
             node2ts[n].append((float(t), v))
-    
+
     leads = []
 
     for ev in events:
         te = float(ev.get("t", 0))
-        if te < 1e11:  # less than year ~5138, i.e. seconds
+        if te < 1e11:   # seconds → ms
             te *= 1000.0
 
         for n in ev.get("targets", []):
             first = None
+
             for t, v in node2ts.get(n, []):
-                # convert t to ms if in seconds
                 if t < 1e11:
                     t *= 1000.0
+
                 if v >= thresh:
                     first = t
                     break
-            if first is not None:
-                delta_days = (te - first) / 86400000.0  # ms to days
-                if abs(delta_days) < 36500:  # sanity check (<100 years)
-                    leads.append(delta_days)
-                else:
-                    print(f"[warn] Suspicious LeadTime: te={te}, t={first}, Δ={delta_days}")
 
+            # Only count if detection happens BEFORE event
+            if first is not None and first < te:
+                delta_days = (te - first) / 86400000.0
+                if delta_days < 36500:   # sanity (<100 years)
+                    leads.append(delta_days)
+
+    # Return mean lead time (days)
     return sum(leads) / len(leads) if leads else 0.0
-    
+
 
     

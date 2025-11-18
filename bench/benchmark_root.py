@@ -325,10 +325,21 @@ def benchmark_paths(
         ts_root = timestamps.get(root_node)
         print(f"[check] root={root_node}, ts_root={ts_root}, window=({t_s}, {t_e}), in_depgraph={root_node in depgraph}")
 
+        # --- Dynamic window expansion around root ---
+        if ts_root:
+            t_s_dynamic = ts_root - 3 * 365 * 86400 * 1000  # 3 years before root
+            t_e_dynamic = ts_root + 1 * 365 * 86400 * 1000  # 1 year after root
+            print(f"[debug] Expanded window: ({t_s_dynamic}, {t_e_dynamic})")
+        else:
+            # fallback to default
+            t_s_dynamic, t_e_dynamic = t_s, t_e
+
         # assign pathconfig to every window
         pcfg = PathConfig(
-            t_start = t_s,
-            t_end = t_e,
+            # t_start = t_s,
+            # t_end = t_e,
+            t_start = t_s_dynamic,
+            t_end = t_e_dynamic,
             strict_increase = strict_increase,
             alpha = alpha, beta=beta, gamma=gamma,
             k_paths = k_paths,
@@ -495,17 +506,23 @@ def benchmark_full(
             ts_root = timestamps.get(root_node)
             print(f"[check] root={root_node}, ts_root={ts_root}, window=({t_s}, {t_e}), in_depgraph={root_node in depgraph}")
 
-            # ======== for debugging: set wider time range ========
-            # set wider time range for path finding
-            # t_s_debug = ts_root - 30 * 86400 * 1000   
-            # t_e_debug = ts_root + 30 * 86400 * 1000   
+            # --- Dynamic window expansion around root ---
+            if ts_root:
+                t_s_dynamic = ts_root - 3 * 365 * 86400 * 1000  # 3 years before root
+                t_e_dynamic = ts_root + 1 * 365 * 86400 * 1000  # 1 year after root
+                print(f"[debug] Expanded window: ({t_s_dynamic}, {t_e_dynamic})")
+            else:
+                # fallback to default
+                t_s_dynamic, t_e_dynamic = t_s, t_e
 
             # assign pathconfig to every window
             pcfg = PathConfig(
-                t_start = t_s,
-                # t_start=t_s_debug,
-                t_end = t_e,
+                # t_start = t_s,
+                # # t_start=t_s_debug,
+                # t_end = t_e,
                 # t_end=t_e_debug,
+                t_start = t_s_dynamic,
+                t_end = t_e_dynamic,
                 strict_increase = strict_increase,
                 alpha = alpha, beta=beta, gamma=gamma,
                 k_paths = k_paths,
@@ -703,29 +720,71 @@ def main():
     # cache from vamana
     cve_meta_path = data_dir.joinpath("cve_records_for_meta.pkl")
 
-    # ---------- load dependency graph -----------
-    with dep_path.open("rb") as f:
-        depgraph = pickle.load(f)
+    # cache k=6 graph
+    cache_dep_k6_path = data_dir.joinpath("dep_graph_cve_k6.pkl")  
 
-    # use subgraph for calculation
-    depgraph = extract_cve_subgraph(depgraph, k =6)
+    if cache_dep_k6_path.exists():
+        print("[info] k=6 subgraph already exists, loading...")
+        with cache_dep_k6_path.open("rb") as f:
+            depgraph = pickle.load(f)
+    else:
+        print("[info] k=6 subgraph not found, generating...")
+        with dep_path.open("rb") as f:
+            full_graph = pickle.load(f)
+
+        depgraph = extract_cve_subgraph(full_graph, k=6)
+
+        # save generated k=6 subgraph
+        with cache_dep_k6_path.open("wb") as f:
+            pickle.dump(depgraph, f)
+        print("[info] k=6 subgraph saved.")
     
     # control graph to subgraph stick to node with cve
     print(f"[info] Graph loaded: {depgraph.number_of_nodes()} nodes, {depgraph.number_of_edges()} edges")
 
     # ----------- for quick test ---------
     MAX_NODES = 100000
-    if depgraph.number_of_nodes() > MAX_NODES:
-        valid_nodes = [n for n, a in depgraph.nodes(data=True) if "timestamp" in a]
-        # random sampling
-        if len(valid_nodes) < MAX_NODES:
-            print(f"[warn] only {len(valid_nodes)} nodes have timestamp, using all of them")
-            keep = valid_nodes
-        else:
-            keep = random.sample(valid_nodes, MAX_NODES)
-        depgraph = depgraph.subgraph(keep).copy()
-        print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
 
+    # 1) Collect *all* nodes that appear in GT paths
+    gt_required_nodes = set()
+    if gt_layer or gt_normal:
+        for item in (gt_layer or gt_normal):
+            for e in item.get("path", []):
+                gt_required_nodes.add(e["src"])
+                gt_required_nodes.add(e["dst"])
+    else:
+        gt_required_nodes = set()
+
+    print(f"[info] GT requires {len(gt_required_nodes)} nodes")
+
+    # 2) Ensure all GT nodes exist in the dependency graph
+    missing = [n for n in gt_required_nodes if n not in depgraph]
+    if missing:
+        print(f"[WARN] {len(missing)} GT nodes missing from depgraph! These roots cannot be evaluated.")
+        # optional: continue or just warn
+
+    # 3) Build final keep set
+    keep = set()
+
+    # a) Always keep GT nodes (highest priority)
+    keep |= (gt_required_nodes & set(depgraph.nodes()))
+
+    # b) Add remaining nodes with timestamp
+    valid_nodes = [n for n, a in depgraph.nodes(data=True)
+                if "timestamp" in a and n not in keep]
+
+    # c) Fill up to MAX_NODES if needed
+    remaining_slots = MAX_NODES - len(keep)
+    if remaining_slots > 0:
+        sampled = random.sample(valid_nodes, min(len(valid_nodes), remaining_slots))
+        keep |= set(sampled)
+
+    print(f"[info] Keeping {len(keep)} nodes (GT + timestamp nodes)")
+
+    # 4) Generate the final GT-safe graph
+    depgraph = depgraph.subgraph(keep).copy()
+    print(f"[debug] depgraph reduced to {depgraph.number_of_nodes()} nodes and {depgraph.number_of_edges()} edges")
+    
     # ============= debug for node overlap with GT =============
     gt_nodes_all = {edge["src"] for g in (gt_layer or gt_normal or []) for edge in g.get("path", [])} | \
                 {edge["dst"] for g in (gt_layer or gt_normal or []) for edge in g.get("path", [])}
@@ -735,18 +794,35 @@ def main():
     print(f"[debug] Node overlap with GT: {overlap_nodes}/{len(gt_nodes_all)} "
         f"({(overlap_nodes/len(gt_nodes_all) if gt_nodes_all else 0):.4f})")
 
-    # -------------- candiate ---------------
-    candidates = []
-    for n, d in depgraph.nodes(data = True):
+    # -------------- candidate selection ---------------
+    gt_root_ids = { item["root_id"] for item in (gt_layer or gt_normal or [])
+                 if item.get("root_id") and item["root_id"] in depgraph }
+
+    print(f"[debug] GT root ids loaded: {len(gt_root_ids)}")
+
+    # 2. build candidates via set() to avoid duplicates
+    candidates = set()
+
+    for n, d in depgraph.nodes(data=True):
         ts = d.get("timestamp")
         if ts is None:
             continue
         if d.get("has_cve") or d.get("cve_count", 0) >= 1:
-            candidates.append((int(ts), n))
+            candidates.add((int(ts), n))
 
-    # sort with increasing timestamp
+    # 3. add all GT root ids
+    for rid in gt_root_ids:
+        ts = depgraph.nodes[rid].get("timestamp")
+        if ts is not None:
+            candidates.add((int(ts), rid))
+
+    # 4. convert back to sorted list
+    candidates = sorted(candidates)
+    print(f"[debug] Total candidates after merging GT roots = {len(candidates)}")
+
+    # 3) sort by timestamp
     candidates.sort()
-    print(f"[info] {len(candidates)} CVE-based candidates selected as potential roots")
+    print(f"[info] {len(candidates)} candidates selected")
 
     # ---------- load nodeid_to_texts & cve_records_for_meta -----------
     nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
@@ -785,8 +861,8 @@ def main():
         ) if d is not None
     )
 
-    lookback_days = 90
-    stride_days   = 7
+    lookback_days = 365 * 2  # 2 years window
+    stride_days   = 30
 
     start = earliest - timedelta(days=lookback_days+1)
     t_eval_list = [d.date() for d in pd.date_range(start=start, end=latest, freq=f"{stride_days}D", inclusive="both")]
@@ -846,6 +922,7 @@ def main():
                             candidates=candidates,
                             ground_truth=gt_layer if gt_layer else gt_normal,
                             )
+    
     all_metrics.update(pathm)
     print("[info] Path benchmark done")
     print("current metrics:", all_metrics)

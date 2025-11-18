@@ -94,7 +94,7 @@ python3 path_track.py --aug_graph /workspace/GraphSec-Flow/data/dep_graph_cve.pk
 
 - Benchmark
 ```
-python3 benchmark.py   --ref /workspace/GraphSec-Flow/data/ref_paths.jsonl   --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl --root /workspace/GraphSec-Flow/data/root_causes.jsonl
+ython3 benchmark.py --ref-layer /workspace/GraphSec-Flow/data/ref_paths_layer_full_6.jsonl
 ```
 
 

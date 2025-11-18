@@ -337,10 +337,6 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
             else:
                 if tsu < tsv:
                     D.add_edge(u, v, time_lag=tsv - tsu)
-
-        print(f"[debug] Root {source} out_degree={D.out_degree(source)}, in_degree={D.in_degree(source)}")
-        print(f"[debug] Out edges from root: {list(D.out_edges(source))[:10]}")
-        print(f"[debug] In edges to root: {list(D.in_edges(source))[:10]}")
                 
         print(f"[debug][build] D has {D.number_of_nodes()} nodes, {D.number_of_edges()} edges")
         print(f"[debug][build] Sample edges: {list(D.edges())[:10]}")
@@ -355,6 +351,20 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
         ) -> Tuple[nx.DiGraph, Dict[str, List[List[str]]]]:
 
         dep = self.depgraph
+
+        root_ts = dep.nodes[source].get("timestamp")
+        neighbors = list(dep.neighbors(source))
+        neighbor_ts = [dep.nodes[n].get("timestamp") for n in neighbors]
+
+        src_ts = dep.nodes[source].get("timestamp")
+        if src_ts:
+            cfg.t_start = src_ts - 5 * 365 * 86400 * 1000   # 5 years before
+            cfg.t_end   = src_ts + 1 * 365 * 86400 * 1000   # 1 year after
+        
+        print(f"[debug] Root {source} ts={root_ts}")
+        print(f"[debug] Neighbor timestamps: {[(n, dep.nodes[n].get('timestamp')) for n in neighbors[:10]]}")
+        print(f"[debug] #neighbors={len(neighbors)}, #neighbors_with_ts={sum(1 for t in neighbor_ts if t)}")
+                
         # 1) get undirected graph
         if isinstance(dep, nx.Graph):
             G_und = dep if not isinstance(dep, nx.DiGraph) else dep.to_undirected()
@@ -376,6 +386,13 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
             print(f"[warn] Root {source} missing in D, adding it back.")
             D.add_node(source, **dep.nodes[source])
 
+        if source in D:
+            print(f"[debug] Root {source} out_degree={D.out_degree(source)}, in_degree={D.in_degree(source)}")
+            print(f"[debug] Out edges from root: {list(D.out_edges(source))[:10]}")
+            print(f"[debug] In edges to root: {list(D.in_edges(source))[:10]}")
+        else:
+            print(f"[debug] Root {source} not found in temporal graph D")
+                
         # [B] fallback if empty
         if D.number_of_edges() == 0:
             print(f"[debug][fallback] No edges found in temporal graph, building relaxed static graph.")
@@ -480,6 +497,9 @@ class RootCausePathAnalyzer(RootCauseAnalyzer):
         src_ts = None
         try:
             src_ts = self.depgraph.nodes[root_node].get("timestamp")
+            if src_ts:
+                cfg.t_start = src_ts - 2 * 365 * 86400 * 1000   # 2 years earlier
+                cfg.t_end   = src_ts + 0.5 * 365 * 86400 * 1000 # 6 months later
         except Exception:
             pass
 
@@ -626,20 +646,16 @@ def main():
         else:
             keep.update(candidates)
 
-    # 如果给了 seeds，但图很大，也可以在 seeds 的基础上补一些节点（可选）
     elif depgraph.number_of_nodes() > max_nodes and len(keep) < max_nodes:
         pool = [n for n in candidates if n not in keep]
         need = max_nodes - len(keep)
         if pool:
             keep.update(random.sample(pool, min(len(pool), need)))
 
-    # 用 keep 来收缩图（不要再用 seeds）
     depgraph = depgraph.subgraph(keep).copy()
 
-    # 刷新 nodes
     nodes = list(depgraph.nodes())
 
-    # 保险：再清掉任何意外缺少 timestamp 的节点
     missing_ts = [n for n, a in depgraph.nodes(data=True) if "timestamp" not in a]
     if missing_ts:
         depgraph.remove_nodes_from(missing_ts)

@@ -35,6 +35,8 @@ import argparse
 import random
 import os
 import numpy as np
+from bench.helper import _root_rank, _precision_at_k, _community_purity, _community_coverage, _edge_coverage
+from bench.helper import avg, convert_edges_to_seq, build_root_to_nodepaths
 
 os.environ["PYTHONHASHSEED"] = "0"  
 random.seed(0)
@@ -48,72 +50,42 @@ try:
 except ImportError:
     pass
 
-def build_minimal_validation_graph(G, target_cve_nodes, k=3, ts_default=None):
+
+def parse_ref_paths(ground_truth):
     """
-    Extract a minimal subgraph centered on specific CVE nodes.
-
-    Args:
-        G (nx.Graph): Full dependency graph.
-        target_cve_nodes (list): List of node IDs (strings) to include as roots.
-        k (int): Hop distance around each CVE root to include.
-        ts_default (float): Optional default timestamp (ms) if missing.
-
-    Returns:
-        subG (nx.Graph): Reduced, attribute-preserving subgraph.
+    ground_truth: list from ref_paths JSONL
+    returns:
+        gt_paths_by_root: dict[root_id → list of GT paths]
+        gt_root_by_cve:   dict[cve_id → root_id]
+        gt_paths_by_cve:  dict[cve_id → list of GT paths]
     """
-    import networkx as nx
-    keep = set()
 
-    for cve in target_cve_nodes:
-        if cve not in G:
-            print(f"[warn] target {cve} not in original graph, skipping.")
+    gt_paths_by_root = defaultdict(list)
+    gt_root_by_cve = {}
+    gt_paths_by_cve = defaultdict(list)
+
+    for item in ground_truth:
+        cve = item.get("cve_id")
+        rid = item.get("root_id")
+        edges = item.get("path", [])
+
+        if not cve or not rid:
             continue
-        neighborhood = nx.single_source_shortest_path_length(G, cve, cutoff=k).keys()
-        keep.update(neighborhood)
 
-    subG = G.subgraph(keep).copy()
+        gt_root_by_cve[cve] = rid
 
-    if not subG.nodes:
-        print(f"[error] No nodes found within {k}-hop radius for {target_cve_nodes}")
-        return subG
+        if edges:
+            gt_paths_by_root[rid].append(edges)
 
-    # --- ensure key attributes are propagated ---
-    for n in target_cve_nodes:
-        if n not in subG:
-            continue
-        # copy attributes from original graph
-        attrs = dict(G.nodes[n])
-        subG.nodes[n].update(attrs)
+        if edges:
+            gt_paths_by_cve[cve].append(edges)
 
-        # enforce CVE flags
-        subG.nodes[n]["has_cve"] = True
-        subG.nodes[n]["cve_count"] = max(1, subG.nodes[n].get("cve_count", 0))
+    return gt_paths_by_root, gt_root_by_cve, gt_paths_by_cve
 
-        # restore timestamp if missing
-        if "timestamp" not in subG.nodes[n] or subG.nodes[n]["timestamp"] is None:
-            subG.nodes[n]["timestamp"] = ts_default or 1339453790000.0
 
-    # --- propagate approximate timestamps to neighbors (optional) ---
-    for n in subG.nodes():
-        if "timestamp" not in subG.nodes[n]:
-            subG.nodes[n]["timestamp"] = subG.nodes[target_cve_nodes[0]].get("timestamp")
-
-    # --- print diagnostics ---
-    print(f"[mini] Reduced to {subG.number_of_nodes()} nodes, {subG.number_of_edges()} edges")
-    if target_cve_nodes[0] in subG:
-        print(f"[mini] Attributes of target root: {subG.nodes[target_cve_nodes[0]]}")
-    else:
-        print(f"[warn] target root {target_cve_nodes[0]} not present in reduced subgraph")
-
-    # --- ensure connectivity ---
-    if not nx.is_connected(subG.to_undirected()):
-        largest_cc = max(nx.connected_components(subG.to_undirected()), key=len)
-        subG = subG.subgraph(largest_cc).copy()
-        print(f"[mini] Extracted largest connected component: {subG.number_of_nodes()} nodes")
-
-    return subG
-
-def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter, window_size=10):
+def benchmark_centrality(tempcent: TempCentricityOptimized, 
+                         events, window_iter, gt_root_ids, window_size=10, k_precision=5
+):
     '''
     events: [{'t': t_eval, "targets": {n1, n2, ...}}, ...]
     window_iter: iterative generator (t_s, t_e, t_eval)
@@ -134,11 +106,20 @@ def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter,
 
     results = {}
 
+    # root ranking helper
+    def root_rank(scores, root):
+        if root not in scores:
+            return None
+        sorted_nodes = sorted(scores, key=lambda x: scores[x], reverse=True)
+        return sorted_nodes.index(root) + 1
+
     # dynamic centrality
     for name in ["Static-DC", "Static-EVC"]:
         latencies = []
         mrrs, h3s = [], []
+        root_ranks, precs, root_mrrs = [], [], []
         series_scores = []
+
         for (t_s, t_e, t_eval) in window_iter():
             if isinstance(t_eval, datetime):
                 t_eval = t_eval.timestamp() * 1000.0
@@ -157,15 +138,28 @@ def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter,
                 mrrs.append(mrr)
                 h3s.append(h3)
         
+            # root-identification over ALL GT roots
+            for rid in gt_root_ids:
+                if rid in norm:
+                    rr = root_rank(norm, rid)
+                    if rr:
+                        root_ranks.append(rr)
+                    precs.append(1.0 if rid in list(sorted(norm, key=lambda x: norm[x], reverse=True))[:k_precision] else 0.0)
+                    rmrr, _ = _rank_metrics(norm, {rid})
+                    root_mrrs.append(rmrr)
+
         results[name] = {
-            "MRR": sum(mrrs) / len(mrrs) if mrrs else 0.0,
-            "Hits@3": sum(h3s) / len(h3s) if h3s else 0.0,
-            "LeadTime (days)": _lead_time(series_scores, events, thresh=0.8),
-            "Latency (ms)": sum(latencies) / len(latencies) if latencies else 0.0,
-            "Hit-Community": "--",
-            "CommCoverage":  "--",
-            "Path-F1": "--",
+            "MRR": avg(mrrs),
+            "Hits@3": avg(h3s),
+            "LeadTime(days)": _lead_time(series_scores, events, thresh=0.8),
+            "Latency(ms)": avg(latencies),
+
+            # Option-A root identification stats
+            "RootRank": avg(root_ranks),
+            f"Precision@{k_precision}": avg(precs),
+            "RootMRR": avg(root_mrrs),
         }
+
 
     # dynamic centrality
     for name, fn in [
@@ -174,6 +168,7 @@ def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter,
     ]:
         latencies = []
         mrrs, h3s = [], []
+        root_ranks, prec_list, root_mrr_list = [], [], []
         series_scores = []
 
         for (t_s, t_e, t_eval) in window_iter():
@@ -183,29 +178,49 @@ def benchmark_centrality(tempcent: TempCentricityOptimized, events, window_iter,
             norm = _zscore(raw)
             series_scores.append((t_eval, norm))
 
-            # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
             ev = next((e for e in events if abs(e["t"] - t_eval) < window_size * 86400000.0), None)
-
             if ev:
                 mrr, h3 = _rank_metrics(norm, ev["targets"])
-                mrrs.append(mrr); h3s.append(h3)
+                mrrs.append(mrr)
+                h3s.append(h3)
+        
+            # root-identification over ALL GT roots
+            for rid in gt_root_ids:
+                if rid in norm:
+                    rr = root_rank(norm, rid)
+                    if rr:
+                        root_ranks.append(rr)
+                    precs.append(1.0 if rid in list(sorted(norm, key=lambda x: norm[x], reverse=True))[:k_precision] else 0.0)
+                    rmrr, _ = _rank_metrics(norm, {rid})
+                    root_mrrs.append(rmrr)
 
         results[name] = {
-            "MRR": sum(mrrs) / len(mrrs) if mrrs else 0.0,
-            "Hits@3": sum(h3s) / len(h3s) if h3s else 0.0,
-            "LeadTime (days)": _lead_time(series_scores, events, thresh=0.8),
-            "Latency (ms)": sum(latencies) / len(latencies) if latencies else 0.0,
-            "Hit-Community": "--",
-            "CommCoverage":  "--",
-            "Path-F1": "--",
+            "MRR": avg(mrrs),
+            "Hits@3": avg(h3s),
+            "LeadTime(days)": _lead_time(series_scores, events, thresh=0.8),
+            "Latency(ms)": avg(latencies),
+
+            # Option-A root identification stats
+            "RootRank": avg(root_ranks),
+            f"Precision@{k_precision}": avg(precs),
+            "RootMRR": avg(root_mrrs),
         }
+
     return results
 
 
-def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], events: List[Dict[str, Any]], window_iter, window_size=10):
+def benchmark_community(depgraph,
+        temcent,
+        node_cve_scores,
+        events,
+        window_iter,
+        gt_root_ids, 
+        window_size=10
+    ):
     '''
     node_cve_scores: {node -> float} Cached per-node aggregate scores (from node_cve_scores.pkl)
     '''
+
     timestamps = _safe_node_timestamps(depgraph)
 
     # initialize community detector
@@ -217,10 +232,10 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
     )
 
     latencies = []
+    hit_list, cov_list, purity_list = [], [], []
+    root_rank_list = []
     mrrs, h3s = [], []
     series_scores = []
-    hit_comm_flags = []
-    coverages = []
     
     # unify event timestamps (seconds → ms)
     for ev in events:
@@ -243,38 +258,54 @@ def benchmark_community(depgraph, temcent, node_cve_scores: Dict[Any, float], ev
             continue
 
         # return the nodes in the best community
-        root_nodes = set(commres.comm_to_nodes.get(best_comm, []))
+
+        comm_nodes = set(commres.comm_to_nodes[best_comm])
         # ----- community metrics -----
-        ev = next((e for e in events if abs(e["t"] - t_eval) < window_size * 86400000.0), None)
-
+        ev = next(
+            (e for e in events if abs(e["t"] - t_eval) < window_size * 86400000),
+            None
+        )
         if ev:
-            targets = set(ev["targets"])
-            hit = 1.0 if (targets & root_nodes) else 0.0
-            cov = (len(targets & root_nodes) / len(targets)) if targets else 0.0
-            hit_comm_flags.append(hit)
-            coverages.append(cov)
-        
-        win_scores = _mask_or_fill(cent_scores or {}, root_nodes, fill=0.0)
-        norm = _zscore(win_scores)
-
-        series_scores.append((t_eval, norm))
-
-        if ev:
-            mrr, h3 = _rank_metrics(norm, ev["targets"])
+            mrr, h3 = _rank_metrics(_zscore(cent_scores), ev["targets"])
             mrrs.append(mrr)
             h3s.append(h3)
 
+        # GT roots coverage / purity
+        for rid in gt_root_ids:
+            if rid not in depgraph:
+                continue
+        
+            # hit
+            hit_list.append(1.0 if rid in comm_nodes else 0.0)
+
+            # 1-hop neighborhood
+            neigh = set(depgraph.neighbors(rid)) | {rid}
+            cov_list.append(len(neigh & comm_nodes)/len(neigh))
+            purity_list.append(len(neigh & comm_nodes)/len(comm_nodes))
+
+            # rank inside community
+            if rid in cent_scores:
+                sorted_nodes = sorted(cent_scores, key=lambda x: cent_scores[x], reverse=True)
+                root_rank_list.append(sorted_nodes.index(rid)+1)
+
+        # for LeadTime
+        norm = _zscore(cent_scores)
+        series_scores.append((t_eval, norm))
+
     return {
-        "Community": {
-            "MRR": sum(mrrs)/len(mrrs) if mrrs else 0.0,
-            "Hits@3": sum(h3s)/len(h3s) if h3s else 0.0,
-            "LeadTime (days)": _lead_time(series_scores, events, thresh=0.8),
-            "Latency (ms)": sum(latencies)/len(latencies) if latencies else 0.0,
-            "Hit-Community": sum(hit_comm_flags)/len(hit_comm_flags) if hit_comm_flags else 0.0,  
-            "CommCoverage":  sum(coverages)/len(coverages) if coverages else 0.0,                
-            "Path-F1": "--",
+            "Community": {
+                "MRR": avg(mrrs),
+                "Hits@3": avg(h3s),
+                "LeadTime(days)": _lead_time(series_scores, events, thresh=0.8),
+                "Latency(ms)": avg(latencies),
+
+                # GT root metrics
+                "Hit-Root": avg(hit_list),
+                "RootCoverage": avg(cov_list),
+                "RootPurity": avg(purity_list),
+                "RootRankInComm": avg(root_rank_list),
+            }
         }
-    }
 
 def benchmark_paths(
         depgraph,
@@ -283,6 +314,8 @@ def benchmark_paths(
         nodeid_to_texts: Dict[Any, List[str]],
         events: List[Dict[str, Any]],
         window_iter,
+        gt_root_ids,
+        gt_paths_by_root, 
         *,
         k_neighbors: int = 15,
         alpha: float = 1.0,
@@ -292,39 +325,38 @@ def benchmark_paths(
         strict_increase: bool=False,
         candidates: list=None,
         window_size: int=10,
-        ground_truth: list=None,   
 
     ):
     ''' 
-    automatically identify root source, construct temporal graph and weight edges,
-    then find top-k paths from root to each target node, and evaluate the F1 score
+    Path tracking benchmark using TRUE GT paths from ref_paths.
+
+    Root selection strategy:
+        - root is chosen by `pick_root_in_window(candidates)`
+        - GT paths are those whose ground-truth root_id matches the chosen root_node
+
+    New metrics:
+        - Path-F1(Jaccard)
+        - Path-F1(GT-Recall)
+        - EdgeCoverage
+        - PredictedPathCount
     '''
 
     # =======================================================
-    # (1) --- Parse & Aggregate Ground Truth ---
+    # (0) --- Convert GT edges → GT node sequences ---------
     # =======================================================
-    gt_by_root = defaultdict(list)
-    if ground_truth:
-        for item in ground_truth:
-            rid = item.get("root_id")
-            edges = item.get("path", [])
-            if rid and edges:
-                gt_by_root[rid].append(edges)
+    root_to_nodepaths = defaultdict(list)
 
-        gt_paths = []
-        for rid, edge_lists in gt_by_root.items():
-            for edges in edge_lists:
-                node_seq = []
-                for edge in edges:
-                    if not node_seq:
-                        node_seq.append(edge["src"])
-                    node_seq.append(edge["dst"])
-                gt_paths.append(node_seq)
+    for rid, edge_lists in gt_paths_by_root.items():
+        for edges in edge_lists:
+            node_seq = []
+            for e in edges:
+                if not node_seq:
+                    node_seq.append(e["src"])
+                node_seq.append(e["dst"])
+            root_to_nodepaths[rid].append(node_seq)
 
-        print(f"[GT] Loaded {len(gt_paths)} paths from {len(gt_by_root)} unique roots.")
-    else:
-        gt_paths = []
-        print("[GT] No ground truth provided — evaluation will use event targets only.")
+    print(f"[GT] Loaded {sum(len(v) for v in root_to_nodepaths.values())} "
+          f"GT node paths from {len(root_to_nodepaths)} roots.")
 
     # =======================================================
     # (2) --- Initialize analyzers ---
@@ -343,123 +375,84 @@ def benchmark_paths(
         centrality=tempcent,
         search_scope="auto"
     )
+    # prepare GT node paths
+    root_to_nodepaths = build_root_to_nodepaths(gt_paths_by_root)
 
-    latencies, mrrs, h3s, f1s = [], [], [], []
-    series_scores = []
+    latencies = []
+    f1_j_list, f1_gr_list, edgecov_list, predcount_list = [], [], [], []
 
     for (t_s, t_e, t_eval) in window_iter():
-        if isinstance(t_eval, datetime):
-            t_eval = t_eval.timestamp() * 1000.0
-
         tic = time.perf_counter()
 
-        # pick up root per window
-        # root_node = pick_root_in_window(candidates, int(t_s), int(t_e))
-        # if root_node is None:
-        #     latencies.append((time.perf_counter() - tic) * 1000.0)
-        #     continue
+        # pick predicted root
+        root_node = pick_root_in_window(candidates, int(t_s), int(t_e))
+        if root_node is None:
+            latencies.append((time.perf_counter()-tic)*1000)
+            continue
 
-        # Force fixed root for debugging
-        root_node = "n4464746"
+        # time window expansion
+        # ts_root = timestamps.get(root_node)
+        # if ts_root:
+        #     t_s_dyn = ts_root - 3*365*86400*1000
+        #     t_e_dyn = ts_root + 1*365*86400*1000
+        # else:
+        #     t_s_dyn, t_e_dyn = t_s, t_e
 
-        if root_node not in depgraph:
-            depgraph.nodes[root_node]["has_cve"] = True
-            depgraph.nodes[root_node]["cve_count"] = 1
-            depgraph.nodes[root_node]["cve_list"] = ["CVE-2023-34462"]
-            print(f"[patch] Added CVE flag to {root_node}")
-
-        # ---------- debug info ----------
-        ts_root = timestamps.get(root_node)
-        print(f"[check] root={root_node}, ts_root={ts_root}, window=({t_s}, {t_e}), in_depgraph={root_node in depgraph}")
-
-        # ======== for debugging: set wider time range ========
-        # set wider time range for path finding
-        t_s_debug = ts_root - 30 * 86400 * 1000   
-        t_e_debug = ts_root + 30 * 86400 * 1000   
-
-        # assign pathconfig to every window
         pcfg = PathConfig(
-            # t_start = t_s,
-            t_start=t_s_debug,
-            # t_end = t_e,
-            t_end=t_e_debug,
-            strict_increase = strict_increase,
-            alpha = alpha, beta=beta, gamma=gamma,
-            k_paths = k_paths,
-            targets = None, 
-            similarity_scores=None
+            t_start= t_s,
+            t_end= t_e,
+            # t_start=t_s_dyn,
+            # t_end=t_e_dyn,
+            strict_increase=strict_increase,
+            alpha=alpha, beta=beta, gamma=gamma,
+            k_paths=k_paths,
+            targets=None,
+            similarity_scores=None,
         )
 
-        # =======================================================
-        # (4) --- Run Path Analysis ---
-        # =======================================================
-        # root cause analysis with paths from t_s to t_e
-        _, _, _D, paths_by_target, _records = analyzer.analyze_with_paths(
+        # run analysis
+        _, _, _, paths_by_target, _ = analyzer.analyze_with_paths(
             k_neighbors=k_neighbors,
             t_start=pcfg.t_start,
             t_end=pcfg.t_end,
             path_cfg=pcfg,
             explain=False,
-            source = root_node
+            source=root_node,
         )
 
+        latencies.append((time.perf_counter()-tic)*1000)
+
         if not paths_by_target:
-            print(f"[warn] No paths found for root {root_node}")
             continue
 
-        # flatten predicted paths
-        predicted_paths = [p for paths in paths_by_target.values() for p in paths]
+        predicted_paths = [p for ps in paths_by_target.values() for p in ps]
+        predcount_list.append(len(predicted_paths))
 
-        print(f"[debug] {len(predicted_paths)} predicted paths (first target: {list(paths_by_target.keys())[:1]})")
+        # compute vs ALL GT roots
+        node_gt_paths = []
+        for rid in gt_root_ids:
+            node_gt_paths.extend(root_to_nodepaths.get(rid, []))
 
-        # =======================================================
-        # (5) --- Select GT paths relevant to current root ---
-        # =======================================================
-        gt_matched_paths = []
-        for p in gt_paths:
-            if root_node in p:
-                gt_matched_paths.append(p)
-
-        if gt_matched_paths:
-            print(f"[debug] Matched {len(gt_matched_paths)} GT paths containing root {root_node}")
+        if node_gt_paths:
+            f1_j = path_f1_partial_match(node_gt_paths, predicted_paths, overlap_thresh=0.5, mode="jaccard")
+            f1_gr = path_f1_partial_match(node_gt_paths, predicted_paths, overlap_thresh=0.5, mode="gt_recall")
+            ec = _edge_coverage(node_gt_paths, predicted_paths)
         else:
-            print(f"[debug] No GT path found containing root {root_node}")
+            f1_j = f1_gr = ec = 0.0
 
-        # =======================================================
-        # (6) --- Compute F1 Metrics ---
-        # =======================================================
-        if gt_matched_paths:
-            f1_jaccard = path_f1_partial_match(gt_matched_paths, predicted_paths,
-                                               overlap_thresh=0.5, mode="jaccard")
-            f1_gtrecall = path_f1_partial_match(gt_matched_paths, predicted_paths,
-                                                overlap_thresh=0.5, mode="gt_recall")
-        else:
-            f1_jaccard = f1_gtrecall = 0.0
-
-        print(f"[Eval] F1(Jaccard)={f1_jaccard:.3f}, F1(GT-Recall)={f1_gtrecall:.3f}")
-        f1s.append({"f1_jaccard": f1_jaccard, "f1_gtrecall": f1_gtrecall})
-
-        latencies.append((time.perf_counter() - tic) * 1000.0)
-
-    # =======================================================
-    # (7) --- Aggregate metrics across all windows ---
-    # =======================================================
-    f1_jaccard_avg = sum(x["f1_jaccard"] for x in f1s) / len(f1s) if f1s else 0.0
-    f1_gtrecall_avg = sum(x["f1_gtrecall"] for x in f1s) / len(f1s) if f1s else 0.0
+        f1_j_list.append(f1_j)
+        f1_gr_list.append(f1_gr)
+        edgecov_list.append(ec)
 
     return {
         "Path": {
-            "MRR": sum(mrrs) / len(mrrs) if mrrs else 0.0,
-            "Hits@3": sum(h3s) / len(h3s) if h3s else 0.0,
-            "LeadTime (days)": _lead_time(series_scores, events, thresh=0.8),
-            "Latency (ms)": np.mean(latencies) if latencies else 0.0,
-            "Hit-Community": "--",
-            "CommCoverage": "--",
-            "Path-F1 (Jaccard)": f1_jaccard_avg,
-            "Path-F1 (GT-Recall)": f1_gtrecall_avg
+            "Path-F1(Jaccard)": avg(f1_j_list),
+            "Path-F1(GT-Recall)": avg(f1_gr_list),
+            "EdgeCoverage": avg(edgecov_list),
+            "PredictedPathCount": avg(predcount_list),
+            "Latency(ms)": avg(latencies),
         }
     }
-
 
 def benchmark_full(
     depgraph,
@@ -468,6 +461,8 @@ def benchmark_full(
     nodeid_to_texts: Dict[Any, List[str]],
     events: List[Dict[str, Any]],
     window_iter,
+    gt_root_ids,
+    gt_paths_by_root,        # ★ GT for path
     *,
     k_neighbors: int = 15,
     alpha: float = 1.0,
@@ -477,14 +472,49 @@ def benchmark_full(
     strict_increase: bool=False,
     fuse_lambda: float = 0.6,
     window_size: int=10,
-    ground_truth: list=None,   
     ):
-    ''' Full benchmark with community detection + path finding + aggregation
+    ''' Full benchmark integrating:
+        (A) temporal community detection
+        (B) root selection inside community
+        (C) path search from predicted root
+        (D) fusion scoring
+    Ground truth is entirely from ref_paths:
+        - root GT = gt_root_by_cve[cve_id]
+        - path GT = gt_paths_by_root[root_id]
     
     '''
+
+    # ===========================================================
+    # 0. Convert GT edges → node sequences for easy matching
+    # ===========================================================
+    root_to_nodepaths = defaultdict(list)
+
+    for rid, edge_lists in gt_paths_by_root.items():
+        for edges in edge_lists:
+            seq = []
+            for e in edges:
+                if not seq:
+                    seq.append(e["src"])
+                seq.append(e["dst"])
+            root_to_nodepaths[rid].append(seq)
+
+    print(f"[GT] Loaded {sum(len(v) for v in root_to_nodepaths.values())} GT node paths "
+          f"from {len(root_to_nodepaths)} roots.")
+    
+    # ===========================================================
+    # 1. Initialize analyzers
+    # ===========================================================
     timestamps = _safe_node_timestamps(depgraph)
 
-    # analyzer
+    # A: community detector
+    tcd = TemporalCommDetector(
+        dep_graph=depgraph,
+        timestamps=timestamps,
+        cve_scores=node_cve_scores,
+        centrality_provider=tempcent,
+    )
+
+    # B: path analyzer
     embedder = CVEVector()
     ann = VamanaSearch()
     vamana = VamanaOnCVE(depgraph, nodeid_to_texts, embedder, ann)
@@ -497,195 +527,146 @@ def benchmark_full(
         search_scope='auto',
     )
 
-    # community detector
-    tcd = TemporalCommDetector(
-        dep_graph=depgraph,
-        timestamps=timestamps,
-        cve_scores=node_cve_scores,
-        centrality_provider=tempcent,
-    )
+    root_to_nodepaths = build_root_to_nodepaths(gt_paths_by_root)
 
     latencies = []
-    mrrs, h3s, f1s = [], [], []
+    final_mrrs, final_h3s = [], []
+    hit_list, cov_list, purity_list = [], [], []
+    root_rank_list = []
+    f1_j_list, f1_gr_list, edgecov_list = [], [], []
+    predcount_list = []
     series_scores = []
-    hit_comm_flags, coverages = [], []
 
     commres = tcd.detect_communities(depgraph)
 
     for (t_s, t_e, t_eval) in window_iter():
+
         if isinstance(t_eval, datetime):
-            t_eval = t_eval.timestamp() * 1000.0
+            t_eval = t_eval.timestamp()*1000
+
+        # event-based ranking
+        ev = next((e for e in events if abs(e["t"]-t_eval)<window_size*86400000), None)
+        ev_targets = ev["targets"] if ev else None
+
         tic = time.perf_counter()
 
-        # A ) root community + centrality 
+        # community prediction
         best_comm, cent_scores = tcd.choose_root_community(commres.comm_to_nodes, t_s, t_e)
-        if best_comm is None or not commres or not commres.comm_to_nodes:
-            latencies.append((time.perf_counter() - tic) * 1000.0)
+        if best_comm is None:
+            latencies.append((time.perf_counter()-tic)*1000)
             continue
 
-        root_nodes = set(commres.comm_to_nodes.get(best_comm, []))
-        # community scores
-        comm_scores = {n: (cent_scores.get(n, 0.0) if n in root_nodes else 0.0)
-                       for n in set(cent_scores.keys()) | root_nodes}
+        comm_nodes = set(commres.comm_to_nodes[best_comm])
 
-        # community hit metric
-        # ev = next((e for e in events if abs(e["t"] - t_eval) < 86400000.0), None)
-        ev = next((e for e in events if abs(e["t"] - t_eval) < window_size * 86400000.0), None)
+        # predicted root = max-centrality node inside community
+        predicted_root = max(comm_nodes, key=lambda n: cent_scores.get(n, 0.0))
 
-        if ev:
-            targets = set(ev["targets"])
-            hit = 1.0 if (targets & root_nodes) else 0.0
-            cov = (len(targets & root_nodes) / len(targets)) if targets else 0.0
-            hit_comm_flags.append(hit); coverages.append(cov) 
-
-        # root node
-        root_node = max(root_nodes, key=lambda n: cent_scores.get(n, 0.0)) if root_nodes else None
-
-        # paths
-        path_scores: Dict[Any, float] = {}
-        paths_by_target = {}
-        if root_node is not None:
-            # ---------- debug info ----------
-            ts_root = timestamps.get(root_node)
-            print(f"[check] root={root_node}, ts_root={ts_root}, window=({t_s}, {t_e}), in_depgraph={root_node in depgraph}")
-
-            # ======== for debugging: set wider time range ========
-            # set wider time range for path finding
-            t_s_debug = ts_root - 30 * 86400 * 1000   
-            t_e_debug = ts_root + 30 * 86400 * 1000   
-
-            # assign pathconfig to every window
-            pcfg = PathConfig(
-                # t_start = t_s,
-                t_start=t_s_debug,
-                # t_end = t_e,
-                t_end=t_e_debug,
-                strict_increase = strict_increase,
-                alpha = alpha, beta=beta, gamma=gamma,
-                k_paths = k_paths,
-                targets = None, 
-                similarity_scores=None
-            )
-
-            # pcfg = PathConfig(
-            #     t_start = float(pd.Timestamp(t_s).timestamp()),
-            #     t_end = float(pd.Timestamp(t_e).timestamp()),
-            #     strict_increase = strict_increase,
-            #     alpha = alpha, beta=beta, gamma=gamma,
-            #     k_paths = k_paths,
-            #     targets = None,
-            #     similarity_scores=None
-            # )
-        
-            _, _, _D, paths_by_target, _records = analyzer.analyze_with_paths(
-                k_neighbors=k_neighbors,
-                t_start=pcfg.t_start,
-                t_end=pcfg.t_end,
-                path_cfg=pcfg,
-                explain=False,
-                source=root_node
-            )
-
-            if not paths_by_target:
-                print(f"[warn] No paths found for root {root_node}")
-                if ground_truth is not None:
-                    print(f"[debug][skip] root_node in ground_truth?", any(
-                        str(item.get("root", "")).lstrip("n") == str(root_node).lstrip("n")
-                        for item in ground_truth
-                    ))
+        # GT root → ALL roots
+        for rid in gt_root_ids:
+            if rid not in depgraph:
                 continue
+            hit_list.append(1.0 if rid in comm_nodes else 0.0)
+            neigh = set(depgraph.neighbors(rid))|{rid}
+            cov_list.append(len(neigh & comm_nodes)/len(neigh))
+            purity_list.append(len(neigh & comm_nodes)/len(comm_nodes))
 
-            for _t, paths in (paths_by_target or {}).items():
-                for p in paths:
-                    for v in p:
-                        path_scores[v] = path_scores.get(v, 0.0) + 1.0   
-            
-        # C） aggregation
-        all_nodes = set(comm_scores.keys()) | set(path_scores.keys())
-        if not all_nodes:
-            latencies.append((time.perf_counter() - tic) * 1000.0)
-            continue
+            # rank of GT root inside community
+            if rid in cent_scores:
+                sorted_nodes = sorted(cent_scores, key=lambda x: cent_scores[x], reverse=True)
+                root_rank_list.append(sorted_nodes.index(rid)+1)
 
-        fused = {n: fuse_lambda * path_scores.get(n, 0.0) + (1- fuse_lambda) * comm_scores.get(n, 0.0)
-                 for n in all_nodes}
-        
-        latencies.append((time.perf_counter() - tic) * 1000.0)
+        # time window expansion
+        # ts_root = timestamps.get(predicted_root)
+        # if ts_root:
+        #     t_s_dyn = ts_root - 3*365*86400*1000
+        #     t_e_dyn = ts_root + 1*365*86400*1000
+        # else:
+        #     t_s_dyn, t_e_dyn = t_s, t_e
+
+        pcfg = PathConfig(
+            t_start= t_s,
+            t_end= t_e,
+            # t_start=t_s_dyn,
+            # t_end=t_e_dyn,
+            strict_increase=strict_increase,
+            alpha=alpha, beta=beta, gamma=gamma,
+            k_paths=k_paths,
+            targets=None,
+            similarity_scores=None,
+        )
+
+        # path analysis
+        _, _, _, paths_by_target, _ = analyzer.analyze_with_paths(
+            k_neighbors=k_neighbors,
+            t_start=pcfg.t_start,
+            t_end=pcfg.t_end,
+            path_cfg=pcfg,
+            explain=False,
+            source=predicted_root,
+        )
+
+        latencies.append((time.perf_counter()-tic)*1000)
+
+        # path GT = ALL GT roots
+        all_gt_paths = []
+        for rid in gt_root_ids:
+            all_gt_paths.extend(root_to_nodepaths.get(rid, []))
+
+        predicted_paths = [p for ps in paths_by_target.values() for p in ps]
+        predcount_list.append(len(predicted_paths))
+
+        if all_gt_paths:
+            f1_j = path_f1_partial_match(all_gt_paths, predicted_paths, overlap_thresh=0.5, mode="jaccard")
+            f1_gr = path_f1_partial_match(all_gt_paths, predicted_paths, overlap_thresh=0.5, mode="gt_recall")
+            ec = _edge_coverage(all_gt_paths, predicted_paths)
+        else:
+            f1_j = f1_gr = ec = 0.0
+
+        f1_j_list.append(f1_j)
+        f1_gr_list.append(f1_gr)
+        edgecov_list.append(ec)
+
+        # fusion scoring for ranking events.targets
+        path_scores = defaultdict(float)
+        for p in predicted_paths:
+            for v in p:
+                path_scores[v] += 1.0
+
+        comm_scores = {n: cent_scores.get(n, 0.0) if n in comm_nodes else 0.0
+                       for n in (set(cent_scores)|comm_nodes)}
+
+        all_nodes = set(path_scores)|set(comm_scores)
+
+        fused = {
+            n: fuse_lambda*path_scores.get(n,0.0) + (1-fuse_lambda)*comm_scores.get(n,0.0)
+            for n in all_nodes
+        }
 
         norm = _zscore(fused)
         series_scores.append((t_eval, norm))
 
-        if ev:
-            mrr, h3 = _rank_metrics(norm, ev["targets"])
-            mrrs.append(mrr); h3s.append(h3)
+        if ev_targets:
+            mrr, h3 = _rank_metrics(norm, ev_targets)
+            final_mrrs.append(mrr)
+            final_h3s.append(h3)
 
-            # existing strict F1
-            f1_strict = _f1_from_paths(paths_by_target, set(ev["targets"]))
-
-            # new partial match F1
-            # extract predicted paths from paths_by_target
-            predicted_paths = [p for paths in paths_by_target.values() for p in paths]
-
-            if ground_truth is not None:
-                gt_paths = []
-                for item in ground_truth:
-                    edges = item.get("path", [])
-                    if not edges:
-                        continue
-                    nodes_in_path = set()
-                    node_seq = []
-                    for edge in edges:
-                        if not node_seq:
-                            node_seq.append(edge["src"])
-                        node_seq.append(edge["dst"])
-                        nodes_in_path.update([edge["src"], edge["dst"]])
-                    # if predicted root node is in GT Paths, count as match
-                    if str(root_node) in nodes_in_path or str(root_node).lstrip("n") == str(item.get("root_id", "")).lstrip("n"):
-                        gt_paths.append(node_seq)
-
-            else:
-                gt_paths = [[t] for t in ev["targets"]]
-
-            
-            print(f"[debug] root_node in ground_truth?", any(
-                str(item.get("root", "")).lstrip("n") == str(root_node).lstrip("n") 
-                for item in ground_truth)
-            )
-
-            print(f"[debug] total gt_paths:", sum(len(item.get("path", [])) for item in ground_truth))
-            print(f"[debug] total pred_paths:", sum(len(paths) for paths in paths_by_target.values()))
-
-            # --- compute F1 under two overlap modes ---
-            f1_jaccard = path_f1_partial_match(gt_paths, predicted_paths, overlap_thresh=0.5, mode="jaccard")
-            f1_gtrecall = path_f1_partial_match(gt_paths, predicted_paths, overlap_thresh=0.5, mode="gt_recall")
-
-
-            print(f"[Eval-Full] F1(strict)={f1_strict:.3f}, "
-                f"F1(Jaccard)={f1_jaccard:.3f}, F1(GT-Recall)={f1_gtrecall:.3f}")
-
-            # record both for later averaging / analysis
-            f1s.append({
-                "f1_jaccard": f1_jaccard,
-                "f1_gtrecall": f1_gtrecall
-            })
-
-    # --- compute average F1s before returning ---
-    f1_jaccard_avg = 0.0
-    f1_gtrecall_avg = 0.0
-
-    if f1s:
-        f1_jaccard_avg = sum(x["f1_jaccard"] for x in f1s) / len(f1s)
-        f1_gtrecall_avg = sum(x["f1_gtrecall"] for x in f1s) / len(f1s)
 
     return {
         "Full": {
-            "MRR": sum(mrrs)/len(mrrs) if mrrs else 0.0,
-            "Hits@3": sum(h3s)/len(h3s) if h3s else 0.0,
-            "LeadTime (days)": _lead_time(series_scores, events, thresh=0.8),
-            "Latency (ms)": sum(latencies)/len(latencies) if latencies else 0.0,
-            "Hit-Community": sum(hit_comm_flags)/len(hit_comm_flags) if hit_comm_flags else 0.0,
-            "CommCoverage":  sum(coverages)/len(coverages) if coverages else 0.0,
-            "Path-F1 (Jaccard)": f1_jaccard_avg,
-            "Path-F1 (GT-Recall)": f1_gtrecall_avg,       
+            "MRR": avg(final_mrrs),
+            "Hits@3": avg(final_h3s),
+            "LeadTime(days)": _lead_time(series_scores, events, thresh=0.8),
+            "Latency(ms)": avg(latencies),
+
+            "Hit-Root": avg(hit_list),
+            "RootCoverage": avg(cov_list),
+            "RootPurity": avg(purity_list),
+            "RootRankInComm": avg(root_rank_list),
+
+            "Path-F1(Jaccard)": avg(f1_j_list),
+            "Path-F1(GT-Recall)": avg(f1_gr_list),
+            "EdgeCoverage": avg(edgecov_list),
+            "PredictedPathCount": avg(predcount_list),
         }
     }
 
@@ -703,12 +684,10 @@ def load_ground_truth(args):
     Load ground truth ref_paths and root_causes (normal + family)
     """
     from utils.util import read_jsonl
-    gt_normal, gt_layer = [], []
-    if args.ref:
-        gt_normal = read_jsonl(args.ref)
+    gt_layer = []
     if args.ref_layer:
         gt_layer = read_jsonl(args.ref_layer)
-    if not gt_layer and not gt_normal:
+    if not gt_layer:
         print("[WARN] No ground truth ref_paths provided. Skip GT evaluation.")
         return None, None
 
@@ -721,122 +700,260 @@ def load_ground_truth(args):
 
     if gt_layer:
         summarize_ref_paths(gt_layer, "layer version")
-    if gt_normal:
-        summarize_ref_paths(gt_normal, "normal version")
 
-    return gt_normal, gt_layer
+    return gt_layer
 
 
 def main():
     parser = argparse.ArgumentParser(description="Benchmark with optional ground truth")
-    parser.add_argument("--ref", type=str, help="Path to ref_paths.jsonl", default=None)
     parser.add_argument("--ref-layer", type=str, help="Path to ref_paths_layer.jsonl", default=None)
-    parser.add_argument("--root", type=str, help="Path to root_causes.jsonl", default=None)
-    parser.add_argument("--pred", type=str, help="Optional path to model predicted paths (json)", default=None)
 
     args, unknown = parser.parse_known_args()
     
     print("\n=== [1] Loading Ground Truth ===")
-    gt_normal, gt_layer = load_ground_truth(args)
+    gt_layer = load_ground_truth(args)
+    gt_paths_by_root, gt_root_by_cve, gt_paths_by_cve = parse_ref_paths(gt_layer)
 
-    # --- [1.1] Filter GT for your chosen test root(s) ---
-    target_root_ids = ["n4464746"]
-    filtered_gt = [
-        g for g in (gt_layer or gt_normal or [])
-        if str(g.get("root_id", "")).lstrip("n") in {rid.lstrip("n") for rid in target_root_ids}
-    ]
-    print(f"[filter] Selected {len(filtered_gt)} ground-truth entries for roots: {target_root_ids}")
-
-    # --- [1.2] Load dependency graph ---
     data_dir = Path.cwd().parent.joinpath("data")
-    dep_path = data_dir.joinpath("dep_graph_cve.pkl")
+
+    # core inputs
+    dep_path   = data_dir.joinpath("dep_graph_cve.pkl")
+    # cache from root_ana
+    node_texts_path = data_dir.joinpath("nodeid_to_texts.pkl")
+    per_cve_path = data_dir.joinpath("per_cve_scores.pkl")  
+    node_scores_path = data_dir.joinpath("node_cve_scores.pkl")
+    # cache from vamana
+    cve_meta_path = data_dir.joinpath("cve_records_for_meta.pkl")
 
     with dep_path.open("rb") as f:
         depgraph = pickle.load(f)
+    
+    # control graph to subgraph stick to node with cve
+    print(f"[info] Graph loaded: {depgraph.number_of_nodes()} nodes, {depgraph.number_of_edges()} edges")
 
-    # --- [1.3] Build a small validation graph ---
-    depgraph = build_minimal_validation_graph(depgraph, target_root_ids, k=3)
-    print(f"[mini] Reduced to {depgraph.number_of_nodes()} nodes, {depgraph.number_of_edges()} edges")
+    print("\n=== [Quick Test] Building structure-preserving subgraph ===")
+    # 1) Collect *all* nodes that appear in GT paths
+    gt_required_nodes = set()
+    if gt_layer:
+        for item in gt_layer:
+            for e in item.get("path", []):
+                gt_required_nodes.add(e["src"])
+                gt_required_nodes.add(e["dst"])
+    else:
+        gt_required_nodes = set()
 
-    # Mark CVE manually (ensures it’s treated as candidate root)
-    for rid in target_root_ids:
-        if rid in depgraph:
-            depgraph.nodes[rid]["has_cve"] = True
-            depgraph.nodes[rid]["cve_count"] = depgraph.nodes[rid].get("cve_count", 0) + 1
+    print(f"[info] GT requires {len(gt_required_nodes)} nodes")
 
-    # --- [1.4] Debug overlap with GT ---
-    gt_nodes_all = {edge["src"] for g in filtered_gt for edge in g.get("path", [])} | \
-                    {edge["dst"] for g in filtered_gt for edge in g.get("path", [])}
-    pred_nodes_all = set(depgraph.nodes())
-    overlap_nodes = len(gt_nodes_all & pred_nodes_all)
-    print(f"[debug] Node overlap with GT: {overlap_nodes}/{len(gt_nodes_all)} "
-        f"({(overlap_nodes/len(gt_nodes_all) if gt_nodes_all else 0):.4f})")
+    # ------------------------------------------------------------
+    # 2) Check missing GT nodes
+    # ------------------------------------------------------------
+    missing = [n for n in gt_required_nodes if n not in depgraph]
+    if missing:
+        print(f"[WARN] {len(missing)} GT nodes missing from depgraph → "
+            f"these GT paths will have broken segments.")
+    else:
+        print("[info] All GT path nodes exist in depgraph.")
 
-    # --- [1.5] Select candidates ---
-    candidates = []
+    # ------------------------------------------------------------
+    # 3) Collect 1-hop neighbors
+    # ------------------------------------------------------------
+    one_hop = set()
+    for n in gt_required_nodes:
+        if n in depgraph:
+            one_hop.update(depgraph.predecessors(n))
+            one_hop.update(depgraph.successors(n))
+
+    print(f"[info] 1-hop neighbors collected: {len(one_hop)}")
+
+    # ------------------------------------------------------------
+    # 4) Collect 2-hop neighbors (neighbors of 1-hop)
+    # ------------------------------------------------------------
+    two_hop = set()
+    for n in one_hop:
+        if n in depgraph:
+            two_hop.update(depgraph.predecessors(n))
+            two_hop.update(depgraph.successors(n))
+
+    print(f"[info] 2-hop neighbors collected: {len(two_hop)}")
+
+    three_hop = set()
+    for n in two_hop:
+        if n in depgraph:
+            three_hop.update(depgraph.predecessors(n))
+            three_hop.update(depgraph.successors(n))
+
+    print(f"[info] 3-hop neighbors collected: {len(three_hop)}")
+
+    # ------------------------------------------------------------
+    # 5) Combine GT nodes + neighbors
+    # ------------------------------------------------------------
+    keep = set(gt_required_nodes) | one_hop | two_hop | three_hop
+    print(f"[info] Total nodes before cap: {len(keep)}")
+
+    # ------------------------------------------------------------
+    # 7) Build subgraph
+    # ------------------------------------------------------------
+    depgraph = depgraph.subgraph(keep).copy()
+    print(f"[debug] Final subgraph: {depgraph.number_of_nodes()} nodes, "
+        f"{depgraph.number_of_edges()} edges")
+
+    # ------------------------------------------------------------
+    # 8) Debug GT path coverage
+    # ------------------------------------------------------------
+    gt_nodes_all = gt_required_nodes
+    pred_nodes = set(depgraph.nodes())
+    overlap = len(gt_nodes_all & pred_nodes)
+
+    print(f"[debug] GT node retention: {overlap}/{len(gt_nodes_all)} "
+        f"({overlap/len(gt_nodes_all):.4f})")
+    print("=== Quick-Test Subgraph Ready ===\n")
+
+
+    # -------------- candidate selection ---------------
+    gt_root_ids = { item["root_id"] for item in (gt_layer or [])
+                 if item.get("root_id") and item["root_id"] in depgraph }
+
+    print(f"[debug] GT root ids loaded: {len(gt_root_ids)}")
+
+    # 2. build candidates via set() to avoid duplicates
+    candidates = set()
+
     for n, d in depgraph.nodes(data=True):
         ts = d.get("timestamp")
         if ts is None:
             continue
-        if d.get("has_cve") or (d.get("cve_count", 0) >= 1):
-            candidates.append((int(ts), n))
+        if d.get("has_cve") or d.get("cve_count", 0) >= 1:
+            candidates.add((int(ts), n))
+
+    # 3. add all GT root ids
+    for rid in gt_root_ids:
+        ts = depgraph.nodes[rid].get("timestamp")
+        if ts is not None:
+            candidates.add((int(ts), rid))
+
+    # 4. convert back to sorted list
+    candidates = sorted(candidates)
+    print(f"[debug] Total candidates after merging GT roots = {len(candidates)}")
+
+    # 3) sort by timestamp
     candidates.sort()
-    print(f"[info] {len(candidates)} CVE-based candidates selected as potential roots")
+    print(f"[info] {len(candidates)} candidates selected")
 
-    # --- [1.6] Load caches (node text, CVE meta, etc.) ---
-    nodeid_to_texts = pickle.loads((data_dir / "nodeid_to_texts.pkl").read_bytes())
-    cve_records_for_meta = pickle.loads((data_dir / "cve_records_for_meta.pkl").read_bytes())
-    per_cve_scores = pickle.loads((data_dir / "per_cve_scores.pkl").read_bytes())
-    node_cve_scores = pickle.loads((data_dir / "node_cve_scores.pkl").read_bytes())
-    print("[cache] Caches loaded successfully")
+    # ---------- load nodeid_to_texts & cve_records_for_meta -----------
+    nodeid_to_texts = pickle.loads(node_texts_path.read_bytes())
+    cve_records_for_meta = pickle.loads(cve_meta_path.read_bytes())
+    print("[cache] nodeid_to_texts & cve_records_for_meta loaded")
 
-    # --- [1.7] Initialize centrality and events ---
+    # ---------- load per_cve_scores & node_cve_scores -----------
+    node_cve_scores = None
+    if per_cve_path.exists():
+        per_cve_scores = pickle.loads(per_cve_path.read_bytes())
+        print("[cache] per_cve_scores loaded")
+    if node_scores_path.exists():
+        node_cve_scores = pickle.loads(node_scores_path.read_bytes())
+        print("[cache] node_cve_scores loaded")
+    
+    # --------- centrality provider ---------
+    # tempcent = TempCentricity(depgraph, search_scope="auto")
     tempcent = TempCentricityOptimized(depgraph, search_scope='auto')
 
-    # In a tiny graph, no automatic CVE events exist — create dummy evaluation events
-    root_ts = next((d.get("timestamp") for n, d in depgraph.nodes(data=True) if n in target_root_ids), None)
-    if root_ts:
-        events = [{"t": root_ts, "targets": target_root_ids}]
-    else:
-        events = []
-    print(f"[debug] Built {len(events)} dummy events for evaluation")
+    # --------- build evaluation timeline ----------
+    earliest = min( 
+        d for d in (
+            _first_cve_data_of_node(metas)
+            for metas in cve_records_for_meta.values()
+        ) if d is not None
+    )
 
-    # --- [1.8] Define evaluation window iterator ---
+    latest = max(
+        d for d in (
+            _last_cve_data_of_node(metas)
+            for metas in cve_records_for_meta.values()
+        ) if d is not None
+    )
+
+    lookback_days = 365 * 2  # 2 years window
+    stride_days   = 30
+
+    start = earliest - timedelta(days=lookback_days+1)
+    t_eval_list = [d.date() for d in pd.date_range(start=start, end=latest, freq=f"{stride_days}D", inclusive="both")]
+
+    events = build_events_from_vamana_meta(
+        depgraph,
+        cve_records_for_meta,
+        t_eval_list,
+        fallback_to_release=True
+    )
+
+    events = [{**e, "t": _to_float_time(e["t"])} for e in events]
+
+    print(f"[info] {len(events)} evaluation events from {t_eval_list[0]} to {t_eval_list[-1]}")
+
+    # ------- time window iterator ---------
     ref_type = pd.Timestamp.now(tz="UTC")
 
     def window_iter():
-        if not events:
-            yield (0, 0, 0)
-        else:
-            for e in events:
-                t_eval = e["t"]
-                yield (t_eval - 7*86400000, t_eval + 7*86400000, t_eval)
+        for d_eval in t_eval_list:
+            d_s = d_eval - timedelta(days=lookback_days)
+            d_e = d_eval
+            t_eval_mid = d_s + (d_e - d_s) / 2
+            yield (
+                _to_float_time(_to_same_type(d_s, ref_type)) * 1000.0,
+                _to_float_time(_to_same_type(d_e, ref_type)) * 1000.0,
+                _to_float_time(_to_same_type(t_eval_mid, ref_type)) * 1000.0,                
+                )
 
-    # --- [1.9] Run Benchmarks ---
+
+    # --------- Run Benchmarks ---------
     all_metrics = {}
 
-    # Community
-    comm = benchmark_community(depgraph, tempcent, node_cve_scores, events, window_iter)
+    # community 
+    if node_cve_scores is None:
+        node_cve_scores = {n: 0.0 for n in depgraph.nodes()}
+        print("[warn] node_cve_scores not found, using dummy scores")
+    
+    comm = benchmark_community(depgraph,
+                tempcent,
+                node_cve_scores,
+                events,
+                window_iter,
+                gt_root_ids,)
+    
     all_metrics.update(comm)
+    print("[info] Community benchmark done")
+    print("current metrics:", all_metrics)
 
-    # Centrality
+    # replace with fast method
     tempcent.degree_centrality = tempcent.degree_centrality_fast
     tempcent.eigenvector_centrality = tempcent.eigenvector_centrality_fast
-    cen = benchmark_centrality(tempcent, events, window_iter)
-    all_metrics.update(cen)
 
-    # Path + Full (use filtered GT)
+    # centrality
+    cen = benchmark_centrality(tempcent, events, window_iter, gt_root_ids)
+    all_metrics.update(cen)
+    print("[info] Centrality benchmark done")
+    print("current metrics:", all_metrics)
+
+    # path & full
     pathm = benchmark_paths(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
+                            gt_root_ids, gt_paths_by_root,
+                            k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, 
                             candidates=candidates,
-                            ground_truth=filtered_gt)
+                            )
+    
     all_metrics.update(pathm)
+    print("[info] Path benchmark done")
+    print("current metrics:", all_metrics)
 
     fullm = benchmark_full(depgraph, tempcent, node_cve_scores, nodeid_to_texts, events, window_iter,
-                        ground_truth=filtered_gt)
+                           gt_root_ids, gt_paths_by_root,    
+                           k_neighbors=15, alpha=5.0, beta=0.0, gamma=0.0, k_paths=5, strict_increase=False, 
+                           fuse_lambda=0.6,
+                            )
     all_metrics.update(fullm)
 
-    print("[final] Metrics summary:")
-    print(json.dumps(all_metrics, indent=2))
+    print(all_metrics)
+
+    print("\n=== [4] Benchmark Completed ===")
 
 # ============================================================
 # --- Entry Point ---
