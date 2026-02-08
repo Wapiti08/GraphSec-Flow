@@ -1,7 +1,7 @@
 # GraphSec-Flow
-dependency propagation analyser on graphs
 ![Python](https://img.shields.io/badge/Python3-3.10.13-brightgreen.svg) 
 
+Temporal dependency propagation and root-cause analysis for OSS ecosystems
 
 ## Structure
 
@@ -65,7 +65,7 @@ sudo apt-get install -y build-essential libffi-dev libssl-dev zlib1g-dev \
   libbz2-dev libreadline-dev libsqlite3-dev liblzma-dev tk-dev uuid-dev
 
 # download dependencies
-pip3 install -r requirmentst.txt
+pip3 install -r requirements.txt
 
 ```
 
@@ -94,8 +94,40 @@ python3 path_track.py --aug_graph /workspace/GraphSec-Flow/data/dep_graph_cve.pk
 
 - Benchmark
 ```
-ython3 benchmark.py --ref-layer /workspace/GraphSec-Flow/data/ref_paths_layer_full_6.jsonl
+python3 benchmark.py --ref-layer /workspace/GraphSec-Flow/data/ref_paths_layer_full_6.jsonl
 ```
+
+## Ground-truth construction (silver, inferred)
+
+We build a **silver** ground truth for evaluation using (i) earliest-affected release selection from OSV/NVD metadata and
+(ii) a time-respecting, depth-bounded traversal to generate reference propagation edges. This GT is **inferred** (not manually verified).
+
+### Algorithm 1: Root cause inference (earliest vulnerable release)
+
+**Input:** vulnerability metadata (affected ranges `R`, optional fixing commits `F`, publication time), dependency graph `G`  
+**Output:** inferred root-cause release node `r`
+
+1. Resolve package id `p` from the advisory (name / repo URL).
+2. Normalize semantic versions in affected ranges `R`.
+3. Collect candidate releases `S = { s in G | package(s)=p and version(s) in R }`.
+4. For each `s in S`, get release time `t(s)`.
+5. Return `r = argmin_{s in S} t(s)`.
+
+### Algorithm 2: Reference propagation path generation (depth-bounded)
+
+**Input:** root `r`, graph `G`, max depth `d_max`  
+**Output:** reference edge set `P`
+
+1. Initialize queue `Q = [(r,0)]`, set `P = ∅`.
+2. While `Q` not empty:
+   - Pop `(u,d)`. If `d == d_max`, continue.
+   - For each downstream dependent release `v` of `u` in `G`:
+     - If `release_time(v) >= release_time(u)`:
+       - Add edge `(u → v)` to `P`
+       - Push `(v, d+1)` into `Q`
+3. Return `P`
+
+See `docs/ground_truth.md` for the full LaTeX version and validation checks.
 
 
 ## Statistical Analysis (extra material)

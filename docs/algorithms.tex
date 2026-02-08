@@ -1,0 +1,58 @@
+\section{Root Cause Inference in Ground Truth Construction}
+
+This algorithm extracts the earliest vulnerable release for each CVE and is used
+to define ground-truth root-cause nodes. The procedure is metadata-driven and
+not part of the main model, so we provide the full steps here for completeness.
+
+\begin{algorithm}[H]
+\caption{Root Cause Inference}
+\label{alg:rootcause}
+\begin{algorithmic}[1]
+\Require CVE metadata from OSV and NVD; dependency graph $G$
+\Ensure Inferred root-cause node $r$
+
+\State Extract affected version ranges $R$, fixing commits $F$, and publication time from metadata
+\State Resolve package identifier $p$ from name or repository URL
+\State Normalize semantic versions in $R$
+\State $S \gets$ all nodes in $G$ whose package matches $p$ and version $\in R$
+\ForAll{$s \in S$}
+    \State retrieve release timestamp $t(s)$
+\EndFor
+\State $r \gets \arg \min_{s \in S} t(s)$ \Comment{Earliest vulnerable release}
+\State \Return $r$
+\end{algorithmic}
+\end{algorithm}
+
+\section{Reference Propagation Path Generation in Ground Truth Construction}
+
+This algorithm generates the reference propagation paths used for evaluation by
+performing a depth-bounded, time-respecting traversal from each root-cause
+release. These inferred paths serve as the ground-truth propagation structure
+against which path-level metrics in the main paper are computed.
+
+\begin{algorithm}[H]
+\caption{Reference Propagation Path Generation}
+\label{alg:refpath}
+\begin{algorithmic}[1]
+\Require Root node $r$; dependency graph $G$; max traversal depth $d_{\max}$
+\Ensure Set of inferred propagation edges $P$
+
+\State Initialize queue $Q \gets \{(r, 0)\}$, and result set $P \gets \emptyset$
+
+\While{$Q$ not empty}
+    \State $(u, d) \gets$ pop from $Q$
+    \If{$d = d_{\max}$}
+        \State \textbf{continue}
+    \EndIf
+
+    \ForAll{downstream dependencies $v$ of $u$ in $G$}
+        \If{release\_time$(v) \ge$ release\_time$(u)$}
+            \State $P \gets P \cup \{(u \rightarrow v)\}$
+            \State push $(v, d+1)$ into $Q$
+        \EndIf
+    \EndFor
+\EndWhile
+
+\State \Return $P$
+\end{algorithmic}
+\end{algorithm}

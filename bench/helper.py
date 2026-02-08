@@ -4,6 +4,7 @@
  # @ Description: the help functions for benchmark and robustness evaluation
  '''
 
+from collections import defaultdict
 from pathlib import Path
 import pickle
 import time
