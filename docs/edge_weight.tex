@@ -1,0 +1,13 @@
+\textbf{Edge Weighting}: 
+Directed edges in $D$ are assigned traversal costs that encode temporal friction and target-attractiveness. 
+Let $\Delta t(u,v) \!=\! T(v)-T(u)\ge 0$, $c(v)$ be a centrality measure on $D$, and $s(v)$ the node score above. With a small $\epsilon > 0$ to avoid division by zero, the edge cost is:
+\begin{align}
+w(u \to v)
+  \;=\;
+  \alpha\,\Delta t(u,v)
+  \;+\;
+  \beta\,\frac{1}{c(v)+\varepsilon}
+  \;+\;
+  \gamma\,\frac{1}{s(v)+\varepsilon},
+\end{align}
+where $\alpha, \beta, \gamma \geq 0$. Intuitively, longer temporal gaps are costlier, and transitions into highly central or highly vulnerable nodes are \emph{cheaper} (via the inverse terms), reflecting their greater likelihood as propagation way-points.

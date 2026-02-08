@@ -1,0 +1,100 @@
+\subsubsection{Ranking Performance} 
+\begin{enumerate}
+    \item \textbf{Mean Reciprocal Rank (MRR)} evaluates how well the model elevates true vulnerable targets under a global ranking:
+    \begin{align}
+        \mathrm{MRR} = \frac{1}{N} \sum_{i=1}^{N} \frac{1}{r_i},
+    \end{align}
+    where $r_i$ denotes the first correct rank.
+    It captures overall ranking sensitivity across long-tailed distributions. 
+\end{enumerate}
+
+
+\subsubsection{Temporal Responsiveness}
+\begin{enumerate}
+    \item \textbf{LeadTime} measures how early the model can flag a target before its first confirmed disclosure:
+    \begin{align}
+    \mathrm{LeadTime}=\frac{1}{N} \sum_{i=1}^{N} (t_{\text{disclose},i} - t_{\text{alert},i})
+    \end{align}
+    where $t_{\text{alert},i}$ and $t_{\text{disclose,i}}$ denote the alert and disclosure timestamps, respectively.  
+    Positive values indicate successful proactive detection prior to external disclosure.
+    LeadTime serves as a temporal robustness measure under realistic CVE release delays.
+\end{enumerate}
+
+
+\subsubsection{Root-Cause Localization Metrics}
+To evaluate if the model can pinpoint the origin of a vulnerability cascade, we use:
+\begin{enumerate}
+    \item \textbf{Hit-Root}
+    Binary success indicator:
+    
+    \begin{align}
+    \mathrm{Hit\text{-}Root} = \mathbf{1}\bigl(\mathcal{R}_{\text{pred}} \cap \mathcal{R}_{\text{gt}} \neq \emptyset\bigr)
+    \end{align}
+    where $R_{pred}$ and $R_{gt}$ denote predicted and ground-truth roots.
+
+    \item \textbf{RootCoverage}
+
+    \begin{align}
+    \mathrm{RootCoverage} = \frac{|\mathcal{R}_{\text{pred}} \cap \mathcal{R}_{\text{gt}}|}{|\mathcal{V}_{\text{gt}}|},
+    \end{align}
+    
+    Fraction of affected nodes encompassed by the inferred root region.
+
+    \item \textbf{RootPurity}
+    
+    \begin{align}
+    \mathrm{RootPurity} = \frac{|\mathcal{R}_{\text{pred}} \cap \mathcal{R}_{\text{gt}}|}{|\mathcal{R}_{\text{pred}}|},
+    \end{align}
+    
+    Precision of the predicted root community.
+
+    \item \textbf{RootRankInComm}
+    Mean rank of the ground-truth root within its structural community, capturing intra-community localization sensitivity.
+    
+\end{enumerate}
+
+
+\subsubsection{Propagation Path Identification}
+
+We assess alignment between predicted and reference propagation chains:
+\begin{enumerate}
+    \item \textbf{Path-F1 (node-overlap)}
+    \begin{align}
+    \mathrm{Path\text{-}F1}
+    = \frac{2 \times |\hat{V} \cap V^*|}{|\hat{V}| + |V^*|},
+    \end{align}
+    where $\hat{V}$ and $V^*$ are predicted and ground-truth node sets.
+    We report both a Jaccard variant \cite{niwattanakul2013using} and a GT-recall variant, capturing strict vs. tolerant overlap criteria.
+
+    \item \textbf{PredictedPathCount}
+    Number of hypothesized propagation chains inferred by the model;
+    indicates how conservative or expansive the model’s propagation exploration is.
+
+\end{enumerate}
+
+
+\subsubsection{Community-Aware Performance}
+
+To assess the benefits of structural grouping, we evaluate two community-level metrics.  
+\begin{enumerate}
+    \item \textbf{community hit rate}
+    \begin{align}
+    \mathrm{Hit_{comm}}
+    =
+    \frac{\text{Correct community hits}}
+         {\text{Total vulnerable nodes}}.
+    \end{align}
+    measures whether vulnerability predictions land in the correct structural region.  
+    \item \textbf{community coverage} of the predicted root region is
+    \begin{align}
+    \mathrm{CommCoverage}
+    =
+    \frac{|\mathcal{C}_{\mathrm{root}}\cap \mathcal{T}|}{|\mathcal{T}|},
+    \end{align}
+    where $\mathcal{C}_{\mathrm{root}}$ is the inferred root community 
+    and $\mathcal{T}$ is the set of ground-truth affected nodes.   
+    This provides a continuous notion of community-level recall and complements 
+    $\mathrm{Hit_{comm}}$ by quantifying how well the selected community 
+    captures the true spread of vulnerability impact.
+\end{enumerate}
+

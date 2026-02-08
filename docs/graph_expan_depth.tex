@@ -1,0 +1,25 @@
+\subsection{Influence of Graph Expansion Depth}
+Evaluating structural models on the full dependency graph is challenging because the ecosystem-scale network is extremely sparse and dominated by semantically unrelated nodes.  
+Such sparsity dilutes vulnerability signals and obscures propagation structure, making it difficult to obtain meaningful measurements of ranking, localization, or path alignment.  
+
+To enable fair and diagnostically useful evaluation, we therefore analyze how different neighborhood expansion depths affect both the density of actionable information and the computational overhead.
+Specifically, we compare three structural settings for subgraph construction:
+\begin{itemize}
+    \item 2-hop expansion: includes the dependency neighborhood reachable within two hops from each ground-truth path.
+    \item 3-hop expansion: further expands each node’s local vicinity, producing an order-of-magnitude larger subgraph.
+    \item Full graph: uses the entire dependency network without truncation.
+\end{itemize}
+Empirically, the choice of hop depth strongly influences information density.
+A 2-hop expansion yields a compact yet semantically cohesive subgraph
+(58K nodes, 481K edges), fully retaining all ground-truth nodes (16/16).
+Expanding to 3 hops increases the graph size by 12.7× (740K nodes) and introduces substantial noise—the proportion of CVE-associated nodes drops from 2.10\% (2-hop) to 1.27\% (3-hop).
+The full graph further dilutes actionable signal (0.48\% CVE density) and exhibits significantly higher latency.
+
+Across all evaluated models, the 2-hop setting consistently yields the strongest prediction signal,
+often outperforming both 3-hop and full-graph settings by one to two orders of magnitude in MRR and RootPurity.
+In contrast, 3-hop expansions broaden the graph but degrade ranking quality,
+suggesting that excessive structural expansion injects far more noise than useful context.
+
+Based on this analysis, all subsequent ranking experiments use the 2-hop-expanded graph,
+which achieves the best trade-off between predictive accuracy, computational cost,
+and preservation of ground-truth propagation structure.
