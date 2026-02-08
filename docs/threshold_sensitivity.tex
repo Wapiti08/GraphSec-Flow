@@ -1,0 +1,32 @@
+\subsubsection{Threshold Sensitivity (Lead Detection)}
+
+Threshold sensitivity is evaluated on a same-scale subgraph (i.e., a subgraph with the same number of nodes as a full evaluation window),
+ensuring controlled comparison across thresholds. This subgraph preserves the global scale characteristics of the full dependency graph, making the resulting threshold choice stable and transferable to the full-graph evaluation setup.
+
+\begin{table}[t]
+\centering
+\caption{Sensitivity of Lead Detection Threshold.}
+\label{tab:lead-threshold}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Thres.} &
+\textbf{MRR $\uparrow$} &
+\textbf{Hit$_{comm}$ $\uparrow$} &
+\textbf{Cove$_{comm}$ $\uparrow$} &
+\textbf{Latency(ms) $\downarrow$} \\
+\midrule
+0.3 & 0.00111 & 0.025 & 0.025 & 0.45 \\
+0.5 & 0.00129 & 0.025 & 0.025 & 0.44 \\
+0.8 & 0.00208 & 0.025 & 0.025 & 0.49 \\
+1.0 & 0.00280 & 0.025 & 0.025 & 2.61 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+To determine an appropriate lead detection threshold for large-scale evaluation, we first conduct a sensitivity analysis using ground-truth paths constructed with a dependency expansion depth of \textbf{10}.
+This deeper context ensures that potential long-range vulnerability propagation are fully covered and provides a reliable basis for threshold calibration.
+
+As shown in Figure~\ref{tab:lead-threshold}, varying the lead detection threshold from $0.3$ to $1.0$ revals a consistent trade-off between ranking precision and stability.  
+Lower thresholds (e.g., $th{=}0.3$–$0.5$) yield noisier activations with little improvement in accuracy, while overly high thresholds (e.g., $th{=}1.0$) increase computational overhead without significant gain in coverage. A balanced setting of \textbf{$th{=}0.8$} achieves stable and reliable ranking performance (MRR~$\approx$~0.002) 
+and is therefore adopted as the default threshold for all subsequent experiments.
+

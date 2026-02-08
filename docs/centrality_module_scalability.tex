@@ -1,0 +1,29 @@
+\paragraph{\textbf{Centrality Module Scalability.}}
+
+We compare four implementations of the temporal centrality module:  
+\begin{enumerate}
+    \item a baseline implementation using lightweight parallelization via 
+\texttt{joblib}\footnote{https://joblib.readthedocs.io/en/latest/parallel.html},  
+    \item a single-process Numba-accelerated variant\footnote{https://numba.pydata.org/},  
+    \item Numba combined with multithreading, and  
+    \item Numba combined with multiprocessing.  
+\end{enumerate}
+All implementations generate identical centrality scores, ensuring that 
+performance differences stem solely from optimization techniques.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.9\linewidth]{imgs/centrality.png}
+    \caption{ Runtime Speedup of Optimized Temporal Centrality Implementations}
+    \label{fig:speedup_bar}
+\end{figure}
+
+As shown in Fig.~\ref{fig:speedup_bar}, Numba-based optimizations provide 
+1.1--1.2$\times$ speedup over the Joblib baseline for 1K--10K node graphs.  
+For larger graphs (100K nodes), multiprocessing and multithreading expose 
+significant communication and memory contention overhead, leading to reduced 
+efficiency (0.56--0.69$\times$), despite identical algorithmic behavior.  
+These results highlight the diminishing returns of heavy parallelization on 
+large sparse dependency structures. Future work could leverage shared-memory 
+sparse data structures, memory-mapped adjacency partitions, or GPU kernels to 
+further enhance scalability.
