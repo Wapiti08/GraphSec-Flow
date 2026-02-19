@@ -15,7 +15,6 @@ Temporal dependency propagation and root-cause analysis for OSS ecosystems
 
 - process: the code to call neo4j and export other formats of graphs, like graphml and csv
 
-
 ## Instructions
 - How to install Goblin Weaver
 ```
@@ -129,33 +128,27 @@ We build a **silver** ground truth for evaluation using (i) earliest-affected re
 
 See `docs/ground_truth.md` for the full LaTeX version and validation checks.
 
-
 ## Statistical Analysis (extra material)
 
 - Distributed of Number of Packages per CVE (Top 100):
     
     ![Distributed of Number of Packages per CVE (Top 100)](imgs/number_of_packages.png)
 
-
 - Releases by number of CVEs (Top 6):
 
     ![Releases by number of CVEs (Top 6)](imgs/releases_by_num_cve.png)
-
 
 - Top 10 Packages with Vulnerable Releases: 
     
     ![Top 10 Packages with Vulnerable Releases](imgs/top_10_degree_releases_with_cve.png)
 
-
 - Top 10 Packages with Highest Degree Centrality:   
 
     ![Top 10 Packages with Highest Degree Centrality](imgs/top_10_degree_packs.png)
 
-
 - Top 10 Vulnerable Releases with Highest Out-degree:
 
     ![Top 10 Vulnerable Releases with Highest Out-degree](imgs/top_10_degree_releases_with_cve.png)
-
 
 - Top 10 Nodes Heatmap:
 
