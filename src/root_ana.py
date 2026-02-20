@@ -2,6 +2,10 @@
  # @ Create Time: 2024-09-19 15:12:57
  # @ Modified time: 2024-09-19 15:43:24
  # @ Description: module to locate root cause software for vulnerablity
+
+ Add ranked candidates to return values
+
+
  '''
 import sys 
 from pathlib import Path 
@@ -342,12 +346,28 @@ class RootCauseAnalyzer:
                     return (base, -float(ts))
             return (base, 0.0)
 
-
         cand_nodes = [n for n, c in comm_res.partition.items() if c == root_comm]
-        root_node = max(cand_nodes, key=global_aware_key)
+
+        # Sort ALL candidates by score (not just pick top-1)
+        cand_nodes = [n for n, c in comm_res.partition.items() if c == root_comm]
+
+        # create ranked list with scores
+        ranked_candidates = []
+        for nid in cand_nodes:
+            score_tuple = global_aware_key(nid)
+            ranked_candidates.append((nid, score_tuple))
+
+        # sort by score (descending)
+        ranked_candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # extract just node IDs
+        ranked_node_ids = [nid for nid, _ in ranked_candidates[:5000]]
+
+        # keep original root_node selection
+        root_node = ranked_node_ids[0] if ranked_node_ids else None
 
         if not return_diagnostics:
-            return root_comm, root_node, None
+            return root_comm, root_node, None, ranked_node_ids
 
         # ---- build reliable diagnostics ----
         
@@ -363,6 +383,7 @@ class RootCauseAnalyzer:
             "graph_hop_mode": hop_mode,
             "chosen_root_node": root_node,
             "chosen_root_comm": root_comm,
+            "ranked_candidates": ranked_node_ids,  
         }
 
         if explanations:
@@ -398,7 +419,7 @@ class RootCauseAnalyzer:
                     "max": float(max(sims)),
                 }
 
-        return root_comm, root_node, diagnostics
+        return root_comm, root_node, diagnostics, ranked_node_ids
 
 
 def main(query_vec=None, search_scope='auto', explain=True, k=15, diag=True, force_rebuild=False, t_s=None, t_e=None):

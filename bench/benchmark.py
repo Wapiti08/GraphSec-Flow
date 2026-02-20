@@ -714,7 +714,7 @@ def main():
     gt_layer = load_ground_truth(args)
     gt_paths_by_root, gt_root_by_cve, gt_paths_by_cve = parse_ref_paths(gt_layer)
 
-    data_dir = Path.cwd().parent.joinpath("data")
+    data_dir = Path.cwd().joinpath("data")
 
     # core inputs
     dep_path   = data_dir.joinpath("dep_graph_cve.pkl")
