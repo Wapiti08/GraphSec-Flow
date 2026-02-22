@@ -15,7 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import pickle
 import json
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 import argparse
 from tqdm import tqdm
 
@@ -52,6 +52,9 @@ class BatchPredictor:
         print("Initializing analyzer...")
         self._init_analyzer()
 
+    # ------------------------------------------------------------------ #
+    #  Data loading                                                        #
+    # ------------------------------------------------------------------ #
 
     def _load_data(self):
         """Load all required data"""
@@ -77,24 +80,48 @@ class BatchPredictor:
         if self.node_scores_path.exists():
             with open(self.node_scores_path, 'rb') as f:
                 self.node_cve_scores = pickle.load(f)
+            # Build fast local lookup: cve_id -> record
+            if isinstance(self.cve_records, list):
+                self.cve_lookup: Dict[str, dict] = {}
+                for rec in self.cve_records:
+                    cid = rec.get('id') or rec.get('cve_id') or rec.get('name', '')
+                    if cid:
+                        self.cve_lookup[cid] = rec
+            elif isinstance(self.cve_records, dict):
+                self.cve_lookup = self.cve_records
+            else:
+                self.cve_lookup = {}
+            print(f"  ✓ CVE metadata loaded ({len(self.cve_lookup):,} entries in local lookup)")
+        else:
+            self.cve_records = None
+            self.cve_lookup = {}       
+        
+        if self.node_scores_path.exists():
+            with open(self.node_scores_path, 'rb') as f:
+                self.node_cve_scores = pickle.load(f)
             print(f"  ✓ Node CVE scores: {len(self.node_cve_scores):,} nodes")
         else:
             self.node_cve_scores = {n: 0.0 for n in self.depgraph.nodes()}
-        
+
         if self.per_cve_path.exists():
             with open(self.per_cve_path, 'rb') as f:
                 self.per_cve_scores = pickle.load(f)
             print(f"  ✓ Per-CVE scores: {len(self.per_cve_scores):,} CVEs")
         else:
             self.per_cve_scores = {}
-        
-        # Timestamps
+
         nodes = list(self.depgraph.nodes())
-        self.timestamps = {n: float(self.depgraph.nodes[n]["timestamp"]) 
-                          for n in nodes 
-                          if "timestamp" in self.depgraph.nodes[n]}
+        self.timestamps = {
+            n: float(self.depgraph.nodes[n]["timestamp"])
+            for n in nodes
+            if "timestamp" in self.depgraph.nodes[n]
+        }
+        self._all_ts_sorted = sorted(self.timestamps.values())
         print(f"  ✓ Timestamps: {len(self.timestamps):,} nodes")
 
+    # ------------------------------------------------------------------ #
+    #  Analyzer init                                                       #
+    # ------------------------------------------------------------------ #
 
     def _init_analyzer(self):
         """Initialize RootCauseAnalyzer"""
@@ -113,10 +140,7 @@ class BatchPredictor:
             ann
         )
         
-        if self.cve_records:
-            self.vamana.build(cve_records=self.cve_records)
-        else:
-            self.vamana.build(cve_records=None)
+        self.vamana.build(cve_records=self.cve_records)
         
         # Analyzer
         self.analyzer = RootCauseAnalyzer(
@@ -128,8 +152,11 @@ class BatchPredictor:
         
         print("  ✓ Analyzer initialized")
 
+    # ------------------------------------------------------------------ #
+    #  CVE collection                                                      #
+    # ------------------------------------------------------------------ #
 
-    def collect_cves(self, max_cves=None):
+    def collect_cves(self, max_cves=None) -> List[str]:
         """Collect all CVEs from graph"""
         print("\nCollecting CVEs from graph...")
         
@@ -153,36 +180,100 @@ class BatchPredictor:
         print(f"  Found {len(cves)} unique CVEs")
         return cves
     
-    
-    def predict_one_cve(self, cve_id, k = 15):
+    # ------------------------------------------------------------------ #
+    #  CVE text lookup: local first, OSV API as fallback          #
+    # ------------------------------------------------------------------ #
+
+    def _get_cve_text(self, cve_id: str) -> Optional[str]:
+        """
+        get cve description text.
+        first try local lookup, then fallback to OSV API if not found or empty
+        """
+        # (1)local cve_records lookup
+        rec = self.cve_lookup.get(cve_id)
+        if rec:
+            text = _first_nonempty(rec, ['details', 'summary', 'description'])
+            if text:
+                return text
+        
+        # (2)get description from cve_list
+        for node in self.depgraph.nodes():
+            node_data = self.depgraph.nodes[node]
+            for entry in node_data.get('cve_list', []):
+                if entry.get('name') == cve_id:
+                    text = _first_nonempty(entry, ['details', 'summary', 'description'])
+                    if text:
+                        return text
+
+        # (3)last option for OSV API
+        try:
+            cve_data = osv_cve_api(cve_id)
+            if cve_data and "data" in cve_data:
+                return _first_nonempty(cve_data['data'], ['details', 'summary', 'description'])
+        except Exception:
+            pass
+
+        return None
+
+    # ------------------------------------------------------------------ #
+    # Dynamic time window per CVE                                #
+    # ------------------------------------------------------------------ #
+    def _time_window(self, cve_id: str) -> Tuple[float, float]:
+        '''
+        compute time windows according to CVE release time
+        if not found, use global 25%-75% timestamp range as fallback
+
+        '''
+        all_ts = self._all_ts_sorted
+        fallback_ts = (all_ts[len(all_ts) // 4], all_ts[3 * len(all_ts) // 4])
+
+        # get timestamp from graph nodes
+        cve_timestamps = []
+        for node in self.depgraph.nodes():
+            node_data = self.depgraph.nodes[node]
+            for entry in node_data.get('cve_list', []):
+                if entry.get('name') == cve_id:
+                    ts = self.timestamps.get(node)
+                    if ts:
+                        cve_timestamps.append(ts)
+
+        if not cve_timestamps:
+            return fallback_ts
+        
+        cve_ts = min(cve_timestamps) 
+        # use 2-year window around the CVE timestamp
+        window = 2 * 365 * 24 * 3600 * 1000.0
+        t_s = max(all_ts[0], cve_ts - window)
+        t_e = min(all_ts[-1], cve_ts + window)
+        return t_s, t_e
+
+    # ------------------------------------------------------------------ #
+    #  Core prediction                                                     #
+    # ------------------------------------------------------------------ #
+
+    def predict_one_cve(self, cve_id, k = 15) -> Tuple[List[str], Optional[str]]:
         """
         Generate predictions for one CVE
         
         Returns:
-            List[str] - ranked node IDs, or empty list if failed
+            (ranked_node_ids, error_reason)
+            ranked_node_ids: Top-K node IDs
+            error_reason: 
         """
         try:
-            # get cve data
-            cve_data = osv_cve_api(cve_id)
-            if not cve_data or "data" not in cve_data:
-                return []
-            
-            # create query vector
-            text = _first_nonempty(cve_data['data'], ['details', 'summary', 'description'])
+            # priority 1: local lookup for CVE text
+            text = self._get_cve_text(cve_id)
             if not text:
-                return []
+                return [], f"no_text: could not find description for {cve_id}"
             
             query_vec = self.embedder.encode(text)
 
-            # Auto time window
-            all_ts = sorted(self.timestamps.values())
-            t_s = all_ts[len(all_ts) // 4]
-            t_e = all_ts[3 * len(all_ts) // 4]
-            
-            # cve score lookup
+            # dynamic time window
+            t_s, t_e = self._time_window(cve_id)
+
             def cve_score_lookup(cid):
                 return self.per_cve_scores.get(cid, 0.0)
-            
+        
             # run analyzer
             result = self.analyzer.analyze(
                 query_vector=query_vec,
@@ -197,17 +288,34 @@ class BatchPredictor:
             # unpact results
             if len(result) == 4:
                 root_comm, root_node, diagnostics, ranked_candidates = result
-            else:
-                # Old version without ranked_candidates
+            elif len(result) == 3:
                 root_comm, root_node, diagnostics = result
-                ranked_candidates = [root_node] if root_node else []
+                ranked_candidates = None
+            else:
+                root_comm, root_node = result[0], result[1]
+                ranked_candidates = None
+                diagnostics = {}
             
-            return ranked_candidates if ranked_candidates else []
-            
+            # ranked_candidates should be a list of (node_id, score) tuples
+            if not ranked_candidates:
+                exps = diagnostics.get('search_explanations', {}) if isinstance(diagnostics, dict) else {}
+                if exps:
+                    ranked_candidates = sorted(
+                        exps.keys(),
+                        key=lambda n: exps[n].get('best_similarity', 0.0),
+                        reverse=True
+                    )
+                elif root_node:
+                    ranked_candidates = [root_node]
+                else:
+                    return [], "no_candidates: analyze returned empty result"
+
+            return ranked_candidates, None
+
         except Exception as e:
-            print(f"  ✗ Error predicting {cve_id}: {e}")
-            return []
-    
+            reason = f"exception: {type(e).__name__}: {e}"
+            return [], reason
+
     def run_batch_prediction(self, max_cves=None, k=15):
         '''
         Run prediction for all CVEs
@@ -239,11 +347,25 @@ class BatchPredictor:
         print(f"  Successful: {len(predictions)}/{len(cves)}")
         print(f"  Failed: {len(failed)}")
 
-        if failed and len(failed) <= 10:
-            print(f"  Failed CVEs: {', '.join(failed)}")
+        if failed:
+            # group failure reasons
+            reason_counts: Dict[str, int] = {}
+            for reason in failed.values():
+                category = reason.split(':')[0]
+                reason_counts[category] = reason_counts.get(category, 0) + 1
+            print(f"  Failure breakdown:")
+            for cat, cnt in sorted(reason_counts.items(), key=lambda x: -x[1]):
+                print(f"    {cat}: {cnt}")
+
+            # save failure details for analysis
+            failed_path = self.output_dir / 'failed_cves.json'
+            with open(failed_path, 'w') as f:
+                json.dump(failed, f, indent=2)
+            print(f"  Failed CVE details saved to: {failed_path}")
 
         return predictions
     
+
     def save_predictions(self, predictions, filename='predictions.json'):
         """ save predictions to JSON
         
@@ -320,8 +442,7 @@ def main():
     )
     
     # Save results
-    output_path = predictor.save_predictions(predictions)
-    
+    predictor.save_predictions(predictions)
     print("\n" + "="*70)
     print(" Batch Prediction Complete! ".center(70))
     print("="*70)

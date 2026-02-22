@@ -1,6 +1,6 @@
 '''
 Negative Control Experiment for GraphSec-Flow
-Validate non-circularity by randomizing temporal singals
+Validate non-circularity by randomizing temporal signals
 
 Usage:
     python3 validation/negative_controls.py
