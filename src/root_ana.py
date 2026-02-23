@@ -320,11 +320,24 @@ class RootCauseAnalyzer:
 
         print(f"effective time threshold: {t_s_eff} ~ {t_e_eff} (used_scope={used_scope})")
 
-        root_comm, cent_scores = self._detector.choose_root_community(
-            comm_to_nodes=comm_res.comm_to_nodes,
-            t_s=t_s_eff,
-            t_e=t_e_eff,
+        # Compute centrality only on temp_subgraph (k nodes, e.g. 15)
+        subgraph_nodes = set(temp_subgraph.nodes())
+        try:
+            import networkx as nx
+            if temp_subgraph.number_of_nodes() > 1:
+                cent_scores_sub = nx.eigenvector_centrality(temp_subgraph, max_iter=200, 
+                                                tol=1e-06, nstart=None, weight=None)
+            else:
+                cent_scores_sub = {n: 1.0 for n in temp_subgraph.nodes()}
+        except Exception:
+            # fallback: degree centrality (always fast)
+            cent_scores_sub = {n: temp_subgraph.degree(n) for n in temp_subgraph.nodes()}
+
+        comm_scores, _ = self.compute_comm_scores_and_reps(
+            comm_res.comm_to_nodes, cent_scores_sub
         )
+        root_comm = max(comm_scores, key=comm_scores.get) if comm_scores else None
+        cent_scores = cent_scores_sub
 
         if root_comm is None:
                 if return_diagnostics:
@@ -346,24 +359,21 @@ class RootCauseAnalyzer:
                     return (base, -float(ts))
             return (base, 0.0)
 
-        cand_nodes = [n for n, c in comm_res.partition.items() if c == root_comm]
+        # Return ALL k neighbors ranked by score, not just root community.
+        # Root community members are boosted to the top via a priority flag.
+        comm_member_set = set(
+            n for n, c in comm_res.partition.items() if c == root_comm
+        )
 
-        # Sort ALL candidates by score (not just pick top-1)
-        cand_nodes = [n for n, c in comm_res.partition.items() if c == root_comm]
+        def full_rank_key(nid: int):
+            base = global_aware_key(nid)
+            in_root_comm = 1 if nid in comm_member_set else 0
+            base_tuple = base if isinstance(base, tuple) else (base,)
+            return (in_root_comm,) + base_tuple
 
-        # create ranked list with scores
-        ranked_candidates = []
-        for nid in cand_nodes:
-            score_tuple = global_aware_key(nid)
-            ranked_candidates.append((nid, score_tuple))
+        ranked_node_ids = sorted(neighbors, key=full_rank_key, reverse=True)
 
-        # sort by score (descending)
-        ranked_candidates.sort(key=lambda x: x[1], reverse=True)
-
-        # extract just node IDs
-        ranked_node_ids = [nid for nid, _ in ranked_candidates[:5000]]
-
-        # keep original root_node selection
+        # root_node = top-ranked neighbor
         root_node = ranked_node_ids[0] if ranked_node_ids else None
 
         if not return_diagnostics:
