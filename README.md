@@ -115,6 +115,7 @@ nohup python3 validation/batch_predict.py --max-cves 100 > batch_predict_100.txt
 
 - Actionability Test
 ```
+# need to finish batch_predict to generate results first
 python validation/actionability.py -k_values 1 3 5 10 15 > logs/actionability_small_ks.txt
 ```
 
