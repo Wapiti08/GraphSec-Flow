@@ -88,7 +88,12 @@ class ActionabilityAnalyzer:
             # collect top-k predictions across all CVEs
             topk_predictions = set()
             for cve_id, ranked_nodes in self.predictions.items():
-                topk_predictions.update(ranked_nodes[:k])
+                for item in ranked_nodes[:k]:
+                    # flatten: item may be a node_id string or a [node_id] list
+                    if isinstance(item, list):
+                        topk_predictions.update(item)
+                    else:
+                        topk_predictions.add(item)
 
             # calculate metrics
             true_positives = len(topk_predictions & self.vulnerable_nodes)
@@ -236,4 +241,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

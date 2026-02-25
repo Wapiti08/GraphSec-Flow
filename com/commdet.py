@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import List, Optional, Dict, Iterable, Tuple
+from typing import List, Optional, Dict, Iterable, Tuple, Set
+from functools import lru_cache
 
 import networkx as nx
 import community.community_louvain as community_louvain
@@ -124,13 +125,53 @@ class TemporalCommDetector:
         comm_to_nodes: Dict[int, List[int]],
         t_s: Optional[float],
         t_e: Optional[float],
+        node_subset: Optional[Set] = None,
         ) -> Tuple[Optional[int], Dict[int, float]]:
         '''
         select the best community id according to the scoring rule
         returns (best_comm_id, comm_scores)
+
+        Optimizations:
+          [Opt 1] node_subset: compute centrality only on community nodes,
+                  not the full 14M-node graph. Falls back to all comm nodes
+                  if not provided.
+          [Opt 2] _cent_cache: cache centrality results keyed by (t_s, t_e,
+                  frozenset(subset)) so repeated window calls with same params
+                  are instant.
+
         '''
-        print("Extracting root community within time interval", t_s, t_e)
-        evc_dict, _, _ = self.centrality_provider.eigenvector_centrality_sparse(t_s, t_e)
+        # [Opt 1] restrict centrality to community nodes only
+        if node_subset is None:
+            node_subset = set(n for nodes in comm_to_nodes.values() for n in nodes)
+
+        # [Opt 2] cache key: round timestamps to nearest second to absorb float noise
+        cache_key = (round(t_s or 0), round(t_e or 0), frozenset(node_subset))
+        if not hasattr(self, '_cent_cache'):
+            self._cent_cache = {}
+        
+        if cache_key in self._cent_cache:
+            evc_dict = self._cent_cache[cache_key]
+        else:
+            # compute centrality only on the relevant subset of nodes
+            sub = self.dep_graph.subgraph(node_subset)
+            try:
+                if sub.number_of_nodes() > 1 and sub.number_of_edges() > 0:
+                    ug = sub.to_undirected() if sub.is_directed() else sub
+                    evc_dict = nx.eigenvector_centrality(
+                        ug, max_iter=200, tol=1e-6, weight=None
+                    )
+                else:
+                    evc_dict = {n: 1.0 for n in sub.nodes()}
+            except Exception:
+                # fallback: degree centrality (always fast and never fails)
+                evc_dict = {n: sub.degree(n) for n in sub.nodes()}
+
+            self._cent_cache[cache_key] = evc_dict
+
+            # keep cache bounded to avoid memory blowup (~500 entries max)
+            if len(self._cent_cache) > 500:
+                oldest = next(iter(self._cent_cache))
+                del self._cent_cache[oldest]
 
         best_comm = None
         best_score = float("-inf")

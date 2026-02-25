@@ -253,9 +253,18 @@ class RootCauseAnalyzer:
         global_t_e = max(self.timestamps.values())
 
         if explain and isinstance(res, tuple):
-            neighbors, explanations = res
+            _raw_neighbors, explanations = res
         else:
-            neighbors, explanations = res, None
+            _raw_neighbors, explanations = res, None
+
+        # [Fix] vamana returns raw ANN point IDs in _raw_neighbors (e.g. 39307),
+        # but node IDs live in explanations.keys() (e.g. 'n6427367').
+        # Using point IDs caused all downstream lookups to miss → avg=2 instead of k=15.
+        if explanations:
+            neighbors = list(explanations.keys())
+        else:
+            neighbors = list(_raw_neighbors) if _raw_neighbors is not None else []
+        print(f"[DEBUG-1] neighbors count after fix: {len(neighbors)}, ids: {neighbors[:3]}...")
 
         # 2) build temporal override scores
         node_score_override: Dict[int, float] = {}
@@ -286,6 +295,7 @@ class RootCauseAnalyzer:
             if temp_subgraph is not None and temp_subgraph.number_of_nodes() > 0:
                 break
         
+        print(f"[DEBUG-2] temp_subgraph nodes: {temp_subgraph.number_of_nodes() if temp_subgraph else 0}, neighbors still: {len(neighbors)}")
         if temp_subgraph is None or temp_subgraph.number_of_nodes() == 0:
             if return_diagnostics:
                 return None, None, {
@@ -372,6 +382,7 @@ class RootCauseAnalyzer:
             return (in_root_comm,) + base_tuple
 
         ranked_node_ids = sorted(neighbors, key=full_rank_key, reverse=True)
+        print(f"[DEBUG-3] ranked_node_ids count: {len(ranked_node_ids)}")
 
         # root_node = top-ranked neighbor
         root_node = ranked_node_ids[0] if ranked_node_ids else None
@@ -382,7 +393,8 @@ class RootCauseAnalyzer:
         # ---- build reliable diagnostics ----
         
         # a) hop distance from each neighbor to the chosen root
-        G = getattr(self.vamana, "dep_graph", None)
+        G = temp_subgraph
+        
         graph_hop_to_root = {}
         for nid in neighbors:
             graph_hop_to_root[nid] = _hop_distance(G, nid, root_node, mode=hop_mode)
