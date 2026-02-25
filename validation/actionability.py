@@ -195,9 +195,7 @@ class ActionabilityAnalyzer:
         print("="*70)
         print("\nGenerated files:")
         print(f"  • {self.output_dir}/actionability_results.json")
-        print(f"  • {self.output_dir}/actionability_table.tex")
         print("\nNext step:")
-        print("  → Copy actionability_table.tex to your paper Section V.C")
         print("="*70)
         
         return results

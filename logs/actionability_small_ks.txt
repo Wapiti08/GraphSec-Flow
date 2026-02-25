@@ -1,0 +1,63 @@
+Loading data...
+Loading graph from data/dep_graph_cve.pkl...
+Loading predictions from data/validation/predictions.json...
+  ✓ Graph: 14,459,139 nodes
+  ✓ Vulnerable nodes: 78,733
+  ✓ Predictions: 2404 CVEs
+======================================================================
+                 GraphSec-Flow Actionability Analysis                 
+======================================================================
+
+Calculating Top-K metrics...
+  Calculating for K=1...
+    Recall@1: 0.0173
+    Precision@1: 1.0000
+    Effort reduction: 99.991%
+  Calculating for K=3...
+    Recall@3: 0.0423
+    Precision@3: 1.0000
+    Effort reduction: 99.977%
+  Calculating for K=5...
+    Recall@5: 0.0658
+    Precision@5: 1.0000
+    Effort reduction: 99.964%
+  Calculating for K=10...
+    Recall@10: 0.1231
+    Precision@10: 1.0000
+    Effort reduction: 99.933%
+  Calculating for K=15...
+    Recall@15: 0.1793
+    Precision@15: 1.0000
+    Effort reduction: 99.902%
+
+======================================================================
+=================== ACTIONABILITY ANALYSIS RESULTS ===================
+======================================================================
+
+Graph Statistics:
+  Total nodes: 14,459,139
+  Vulnerable nodes: 78,733 (0.545%)
+  CVEs analyzed: 2404
+
+Top-K Performance:
+K          | Recall     | Precision    | Coverage   | Effort Reduction  
+---------------------------------------------------------------------------
+1          | 0.0173     | 1.000000     | 0.009    % | 99.991           %
+3          | 0.0423     | 1.000000     | 0.023    % | 99.977           %
+5          | 0.0658     | 1.000000     | 0.036    % | 99.964           %
+10         | 0.1231     | 1.000000     | 0.067    % | 99.933           %
+15         | 0.1793     | 1.000000     | 0.098    % | 99.902           %
+
+======================================================================
+KEY INSIGHTS
+======================================================================
+✓ Results saved to: data/validation/actionability_results.json
+
+======================================================================
+                          Analysis Complete!                          
+======================================================================
+
+Generated files:
+  • data/validation/actionability_results.json
+
+======================================================================

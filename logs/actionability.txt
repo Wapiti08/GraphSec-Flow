@@ -1,0 +1,62 @@
+Loading data...
+Loading graph from data/dep_graph_cve.pkl...
+Loading predictions from data/validation/predictions.json...
+  ✓ Graph: 14,459,139 nodes
+  ✓ Vulnerable nodes: 78,733
+  ✓ Predictions: 2404 CVEs
+======================================================================
+                 GraphSec-Flow Actionability Analysis                 
+======================================================================
+
+Calculating Top-K metrics...
+  Calculating for K=100...
+    Recall@100: 0.1793
+    Precision@100: 1.0000
+    Effort reduction: 99.902%
+  Calculating for K=500...
+    Recall@500: 0.1793
+    Precision@500: 1.0000
+    Effort reduction: 99.902%
+  Calculating for K=1000...
+    Recall@1000: 0.1793
+    Precision@1000: 1.0000
+    Effort reduction: 99.902%
+  Calculating for K=5000...
+    Recall@5000: 0.1793
+    Precision@5000: 1.0000
+    Effort reduction: 99.902%
+
+======================================================================
+=================== ACTIONABILITY ANALYSIS RESULTS ===================
+======================================================================
+
+Graph Statistics:
+  Total nodes: 14,459,139
+  Vulnerable nodes: 78,733 (0.545%)
+  CVEs analyzed: 2404
+
+Top-K Performance:
+K          | Recall     | Precision    | Coverage   | Effort Reduction  
+---------------------------------------------------------------------------
+100        | 0.1793     | 1.000000     | 0.098    % | 99.902           %
+500        | 0.1793     | 1.000000     | 0.098    % | 99.902           %
+1000       | 0.1793     | 1.000000     | 0.098    % | 99.902           %
+5000       | 0.1793     | 1.000000     | 0.098    % | 99.902           %
+
+======================================================================
+KEY INSIGHTS
+======================================================================
+
+✓ Top-1000 Triage Strategy:
+  • Inspecting 14,119 nodes (0.098% of ecosystem)
+  • Recovers 14,119 vulnerable packages (17.9% recall)
+  • Reduces manual audit effort by 99.902%
+✓ Results saved to: data/validation/actionability_results.json
+
+======================================================================
+                          Analysis Complete!                          
+======================================================================
+
+Generated files:
+  • data/validation/actionability_results.json
+======================================================================
