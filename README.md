@@ -79,6 +79,14 @@ python3 graph_cve.py --dep_graph {your local path}/data/dep_graph.pkl --cve_json
 - generate ground truth data
 ```
 python3 gt_builder.py --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl --cve-meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl --out-root /workspace/GraphSec-Flow/data/root_causes.jsonl --out-paths /workspace/GraphSec-Flow/data/ref_paths.jsonl
+
+# with depth 3:
+python3 gt_builder.py \
+  --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl \
+  --cve-meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl \
+  --out-root /workspace/GraphSec-Flow/data \
+  --out-paths /workspace/GraphSec-Flow/data \
+  --max-depth 3
 ```
 
 - Root Cause Analysis
@@ -95,16 +103,25 @@ python3 path_track.py --aug_graph /workspace/GraphSec-Flow/data/dep_graph_cve.pk
 ```
 
 # baseline benchmark
-nohup python bench/benchmark.py     --dep-graph data/validation/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark.txt 2>&1 &
+nohup python bench/benchmark.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark.txt 2>&1 &
 
 ## length 6 
-nohup python bench/benchmark.py     --dep-graph data/validation/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark_6.txt 2>&1 &
+nohup python bench/benchmark.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark_6.txt 2>&1 &
 
 # random benchmark
 nohup python bench/benchmark.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/random_benchmark.txt 2>&1 &
 
 ## length 6
 nohup python bench/benchmark.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl     --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl   > logs/random_benchmark_6.txt 2>&1 &
+
+## optimized version
+nohup python bench/benchmark_opt.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark_6_opt.txt 2>&1 &
+
+nohup python bench/benchmark_opt.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl    --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/random_benchmark_6_opt.txt 2>&1 &
+
+nohup python bench/benchmark_opt.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/random_benchmark_opt.txt 2>&1 &
+
+nohup python bench/benchmark_opt.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark_opt.txt 2>&1 &
 
 ```
 
@@ -117,6 +134,18 @@ nohup python3 validation/batch_predict.py --max-cves 100 > batch_predict_100.txt
 ```
 # need to finish batch_predict to generate results first
 python validation/actionability.py -k_values 1 3 5 10 15 > logs/actionability_small_ks.txt
+```
+
+- Depth Validation (on sub graph)
+```
+python validation/depth_ablation.py \
+    --dep-graph   data/dep_graph_cve_sub.pkl \
+    --cve-meta data/cve_records_for_meta.pkl \
+    --predictions data/validation/predictions.json \
+    --depths 2 3 4 6 8 \
+    --out         data/validation/depth_ablation_sub.json \
+    2>&1 | tee logs/depth_ablation_sub.log
+
 ```
 
 - 

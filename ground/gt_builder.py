@@ -40,8 +40,8 @@ from datetime import datetime, timezone
 import time
 from cve.cvescore import _osv_extract_fix_commits
 from functools import lru_cache
-from utils.util import read_jsonl, write_jsonl, _safe_load_pickle
 import os
+from utils.util import _safe_load_pickle, write_jsonl
 
 # --------------------------------
 # Data Models
@@ -653,9 +653,9 @@ class GTBuilder:
                 ReferencePath(
                     cve_id=root.cve_id,
                     root_id=rid or f"{root.package}@",
-                    path=[],
-                    evidence=[EvidenceItem(source="GTBUILDER", fields={"reason": reason})],
-                    confidence=max(0.0, root.confidence * 0.5)
+                    path=edges_accum,
+                    evidence=[EvidenceItem(source="GTBUILDER", fields={"reason": "bfs_traversal", "visited_nodes": len(visited), "edges_found": len(edges_accum)})],
+                    confidence=conf
                 )
             )        
             
