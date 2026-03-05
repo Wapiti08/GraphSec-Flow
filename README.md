@@ -78,14 +78,13 @@ python3 graph_cve.py --dep_graph {your local path}/data/dep_graph.pkl --cve_json
  
 - generate ground truth data
 ```
-python3 gt_builder.py --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl --cve-meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl --out-root /workspace/GraphSec-Flow/data/root_causes.jsonl --out-paths /workspace/GraphSec-Flow/data/ref_paths.jsonl
-
-# with depth 3:
+# with depth 3 without time constraint:
 python3 gt_builder.py \
   --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl \
   --cve-meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl \
   --out-root /workspace/GraphSec-Flow/data \
   --out-paths /workspace/GraphSec-Flow/data \
+  --no-time-constraint \
   --max-depth 3
 ```
 
@@ -97,6 +96,55 @@ python3 root_ana.py --cve_id "CVE-2017-5650"
 - Root Cause Path Analysis
 ```
 python3 path_track.py --aug_graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl --paths_jsonl /workspace/GraphSec-Flow/result/result.json --subgraph_gexf  /workspace/GraphSec-Flow/result/result.gexf --t_start 1021437154000 --t_end 1724985046000
+```
+
+- Generate node lookup for manual validation:
+
+```
+python3 - << 'EOF'
+import pickle, json, csv
+from pathlib import Path
+
+print("Loading graph...")
+with open('data/dep_graph_cve.pkl', 'rb') as f:
+    G = pickle.load(f)
+
+node_ids = set()
+with open('data/validation/manual_labels_predicted.csv') as f:
+    for row in csv.DictReader(f):
+        for nid in row['top_predicted_nodes'].split('|'):
+            if nid.strip():
+                node_ids.add(nid.strip())
+
+print(f"Resolving {len(node_ids)} node IDs...")
+result = {}
+for nid in sorted(node_ids):
+    if nid in G.nodes:
+        d = G.nodes[nid]
+        result[nid] = {
+            'release': d.get('release', d.get('artifact', d.get('name', '?'))),
+            'group':   d.get('group_id', d.get('groupId', '')),
+            'artifact':d.get('artifact_id', d.get('artifactId', '')),
+            'version': d.get('version', ''),
+            'has_cve': d.get('has_cve', False),
+        }
+    else:
+        result[nid] = {'release': 'NOT FOUND'}
+
+with open('data/validation/node_lookup.json', 'w') as f:
+    json.dump(result, f, indent=2)
+
+for nid, info in result.items():
+    r = info.get('release','')
+    g = info.get('group','')
+    a = info.get('artifact','')
+    v = info.get('version','')
+    label = f"{g}:{a}:{v}" if g and a else r
+    print(f"  {nid:15s} → {label}")
+
+print(f"\n✓ Saved to data/validation/node_lookup.json")
+EOF
+```
 ```
 
 - Benchmark
@@ -122,6 +170,21 @@ nohup python bench/benchmark_opt.py     --dep-graph data/validation/dep_graph_cv
 nohup python bench/benchmark_opt.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/random_benchmark_opt.txt 2>&1 &
 
 nohup python bench/benchmark_opt.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark_opt.txt 2>&1 &
+
+```
+
+- Small Scale Validation Benchmark
+
+```
+# for small graph
+nohup python bench/benchmark_opt.py --dep-graph data/dep_graph_cve_2hop.pkl --ref-layer data/ref_paths_layer_3.jsonl --node-texts data/nodeid_to_texts.pkl --cve-meta data/cve_records_for_meta.pkl --per-cve data/per_cve_scores.pkl --node-scores data/node_cve_scores.pkl > logs/benchmark_2hop_g3_baseline.txt 2>&1 &
+# for full graph
+nohup python bench/benchmark_opt.py --dep-graph data/dep_graph_cve.pkl --ref-layer data/ref_paths_layer_3.jsonl --node-texts data/nodeid_to_texts.pkl --cve-meta data/cve_records_for_meta.pkl --per-cve data/per_cve_scores.pkl --node-scores data/node_cve_scores.pkl > logs/benchmark_g3_baseline.txt 2>&1 &
+
+# for small graph
+nohup python bench/benchmark_opt.py --dep-graph data/dep_graph_cve_2hop_random.pkl --ref-layer data/ref_paths_layer_3.jsonl --node-texts data/nodeid_to_texts.pkl --cve-meta data/cve_records_for_meta.pkl --per-cve data/per_cve_scores.pkl --node-scores data/node_cve_scores.pkl > logs/benchmark_2hop_g3_random.txt 2>&1 &
+# for full graph
+nohup python bench/benchmark_opt.py --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl --ref-layer data/ref_paths_layer_3.jsonl --node-texts data/nodeid_to_texts.pkl --cve-meta data/cve_records_for_meta.pkl --per-cve data/per_cve_scores.pkl --node-scores data/node_cve_scores.pkl > logs/benchmark_g3_random.txt 2>&1 &
 
 ```
 

@@ -1,0 +1,625 @@
+{
+  "n10143523": {
+    "release": "org.apache.xmlgraphics:batik:1.9.1",
+    "group": "",
+    "artifact": "",
+    "version": "1.9.1",
+    "has_cve": true
+  },
+  "n10217150": {
+    "release": "org.apache.hadoop:hadoop-common:2.0.2-alpha",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.2-alpha",
+    "has_cve": true
+  },
+  "n10293634": {
+    "release": "org.apache.zeppelin:zeppelin-server:0.10.1",
+    "group": "",
+    "artifact": "",
+    "version": "0.10.1",
+    "has_cve": true
+  },
+  "n10419533": {
+    "release": "org.apache.cxf:cxf:2.1.5",
+    "group": "",
+    "artifact": "",
+    "version": "2.1.5",
+    "has_cve": true
+  },
+  "n10425301": {
+    "release": "org.glassfish.main.web:web-core:3.1.2",
+    "group": "",
+    "artifact": "",
+    "version": "3.1.2",
+    "has_cve": true
+  },
+  "n10497102": {
+    "release": "org.apache.cxf:cxf:2.5.1",
+    "group": "",
+    "artifact": "",
+    "version": "2.5.1",
+    "has_cve": true
+  },
+  "n10497769": {
+    "release": "org.apache.cxf:cxf:2.4.5",
+    "group": "",
+    "artifact": "",
+    "version": "2.4.5",
+    "has_cve": true
+  },
+  "n10521928": {
+    "release": "org.bouncycastle:bcprov-jdk14:1.51",
+    "group": "",
+    "artifact": "",
+    "version": "1.51",
+    "has_cve": true
+  },
+  "n10521934": {
+    "release": "org.bouncycastle:bcprov-jdk14:1.55",
+    "group": "",
+    "artifact": "",
+    "version": "1.55",
+    "has_cve": true
+  },
+  "n1069355": {
+    "release": "org.apache.unomi:unomi:1.0.0-incubating",
+    "group": "",
+    "artifact": "",
+    "version": "1.0.0-incubating",
+    "has_cve": true
+  },
+  "n10811843": {
+    "release": "com.thoughtworks.xstream:xstream:1.3",
+    "group": "",
+    "artifact": "",
+    "version": "1.3",
+    "has_cve": true
+  },
+  "n10811846": {
+    "release": "com.thoughtworks.xstream:xstream:1.4",
+    "group": "",
+    "artifact": "",
+    "version": "1.4",
+    "has_cve": true
+  },
+  "n10922886": {
+    "release": "org.apache.inlong:manager-pojo:1.4.0",
+    "group": "",
+    "artifact": "",
+    "version": "1.4.0",
+    "has_cve": true
+  },
+  "n10930939": {
+    "release": "org.apache.inlong:manager-pojo:1.5.0",
+    "group": "",
+    "artifact": "",
+    "version": "1.5.0",
+    "has_cve": true
+  },
+  "n11028550": {
+    "release": "org.apache.hadoop:hadoop-client:1.0.3",
+    "group": "",
+    "artifact": "",
+    "version": "1.0.3",
+    "has_cve": true
+  },
+  "n11028552": {
+    "release": "org.apache.hadoop:hadoop-client:1.0.2",
+    "group": "",
+    "artifact": "",
+    "version": "1.0.2",
+    "has_cve": true
+  },
+  "n11243780": {
+    "release": "org.apache.hadoop:hadoop-client:2.0.2-alpha",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.2-alpha",
+    "has_cve": true
+  },
+  "n11433216": {
+    "release": "org.apache.xmlgraphics:batik:1.10",
+    "group": "",
+    "artifact": "",
+    "version": "1.10",
+    "has_cve": true
+  },
+  "n11971736": {
+    "release": "org.apache.inlong:manager-service:1.2.0-incubating",
+    "group": "",
+    "artifact": "",
+    "version": "1.2.0-incubating",
+    "has_cve": true
+  },
+  "n12044410": {
+    "release": "org.apache.unomi:unomi:1.1.0-incubating",
+    "group": "",
+    "artifact": "",
+    "version": "1.1.0-incubating",
+    "has_cve": true
+  },
+  "n12719752": {
+    "release": "org.dojotoolkit:dojo:1.10.2",
+    "group": "",
+    "artifact": "",
+    "version": "1.10.2",
+    "has_cve": true
+  },
+  "n12719757": {
+    "release": "org.dojotoolkit:dojo:1.10.1",
+    "group": "",
+    "artifact": "",
+    "version": "1.10.1",
+    "has_cve": true
+  },
+  "n12719760": {
+    "release": "org.dojotoolkit:dojo:1.10.0",
+    "group": "",
+    "artifact": "",
+    "version": "1.10.0",
+    "has_cve": true
+  },
+  "n1284928": {
+    "release": "org.springframework.data:spring-data-commons:2.0.4.RELEASE",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.4.RELEASE",
+    "has_cve": true
+  },
+  "n13425591": {
+    "release": "org.apache.hugegraph:hugegraph-api:1.2.0",
+    "group": "",
+    "artifact": "",
+    "version": "1.2.0",
+    "has_cve": true
+  },
+  "n1402801": {
+    "release": "org.xwiki.commons:xwiki-commons-xml:14.7-rc-1",
+    "group": "",
+    "artifact": "",
+    "version": "14.7-rc-1",
+    "has_cve": true
+  },
+  "n1627832": {
+    "release": "org.apache.zookeeper:zookeeper:3.3.0",
+    "group": "",
+    "artifact": "",
+    "version": "3.3.0",
+    "has_cve": true
+  },
+  "n1932142": {
+    "release": "org.springframework.security:spring-security-core:3.0.3.RELEASE",
+    "group": "",
+    "artifact": "",
+    "version": "3.0.3.RELEASE",
+    "has_cve": true
+  },
+  "n1975263": {
+    "release": "org.craftercms:crafter-studio:3.1.0",
+    "group": "",
+    "artifact": "",
+    "version": "3.1.0",
+    "has_cve": true
+  },
+  "n1975269": {
+    "release": "org.craftercms:crafter-studio:3.1.3",
+    "group": "",
+    "artifact": "",
+    "version": "3.1.3",
+    "has_cve": true
+  },
+  "n1976122": {
+    "release": "org.craftercms:crafter-studio:3.0.2",
+    "group": "",
+    "artifact": "",
+    "version": "3.0.2",
+    "has_cve": true
+  },
+  "n201849": {
+    "release": "org.apache.hadoop:hadoop-common:0.22.0",
+    "group": "",
+    "artifact": "",
+    "version": "0.22.0",
+    "has_cve": true
+  },
+  "n2136001": {
+    "release": "org.apache.struts:struts2-core:2.0.11.2",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.11.2",
+    "has_cve": true
+  },
+  "n2136008": {
+    "release": "org.apache.struts:struts2-core:2.0.11.1",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.11.1",
+    "has_cve": true
+  },
+  "n2263846": {
+    "release": "org.keycloak:keycloak-model-jpa:4.8.3.Final",
+    "group": "",
+    "artifact": "",
+    "version": "4.8.3.Final",
+    "has_cve": true
+  },
+  "n2393824": {
+    "release": "org.xwiki.commons:xwiki-commons-xml:14.6",
+    "group": "",
+    "artifact": "",
+    "version": "14.6",
+    "has_cve": true
+  },
+  "n2641967": {
+    "release": "org.springframework.security:spring-security-core:2.0.3",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.3",
+    "has_cve": true
+  },
+  "n2641968": {
+    "release": "org.springframework.security:spring-security-core:2.0.2",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.2",
+    "has_cve": true
+  },
+  "n2715513": {
+    "release": "org.keycloak:keycloak-model-jpa:4.7.0.Final",
+    "group": "",
+    "artifact": "",
+    "version": "4.7.0.Final",
+    "has_cve": true
+  },
+  "n2793664": {
+    "release": "org.keycloak:keycloak-services:1.9.0.Final",
+    "group": "",
+    "artifact": "",
+    "version": "1.9.0.Final",
+    "has_cve": true
+  },
+  "n282429": {
+    "release": "org.keycloak:keycloak-model-jpa:12.0.0",
+    "group": "",
+    "artifact": "",
+    "version": "12.0.0",
+    "has_cve": true
+  },
+  "n3101863": {
+    "release": "org.keycloak:keycloak-services:2.2.0.Final",
+    "group": "",
+    "artifact": "",
+    "version": "2.2.0.Final",
+    "has_cve": true
+  },
+  "n3163965": {
+    "release": "org.glassfish.main.web:web-core:4.0-b72",
+    "group": "",
+    "artifact": "",
+    "version": "4.0-b72",
+    "has_cve": true
+  },
+  "n3690233": {
+    "release": "org.apache.struts:struts2-core:2.3.20.1",
+    "group": "",
+    "artifact": "",
+    "version": "2.3.20.1",
+    "has_cve": true
+  },
+  "n3829010": {
+    "release": "org.apache.zeppelin:zeppelin-interpreter:0.8.2",
+    "group": "",
+    "artifact": "",
+    "version": "0.8.2",
+    "has_cve": true
+  },
+  "n3839887": {
+    "release": "org.richfaces:richfaces-core:4.5.5.Final",
+    "group": "",
+    "artifact": "",
+    "version": "4.5.5.Final",
+    "has_cve": true
+  },
+  "n3976019": {
+    "release": "com.thoughtworks.xstream:xstream:1.4.10",
+    "group": "",
+    "artifact": "",
+    "version": "1.4.10",
+    "has_cve": true
+  },
+  "n4171775": {
+    "release": "org.apache.logging.log4j:log4j-core:2.6",
+    "group": "",
+    "artifact": "",
+    "version": "2.6",
+    "has_cve": true
+  },
+  "n4548052": {
+    "release": "org.apache.tomcat:tomcat:7.0.41",
+    "group": "",
+    "artifact": "",
+    "version": "7.0.41",
+    "has_cve": true
+  },
+  "n4548119": {
+    "release": "org.apache.tomcat:tomcat:7.0.35",
+    "group": "",
+    "artifact": "",
+    "version": "7.0.35",
+    "has_cve": true
+  },
+  "n4548123": {
+    "release": "org.apache.tomcat:tomcat:7.0.37",
+    "group": "",
+    "artifact": "",
+    "version": "7.0.37",
+    "has_cve": true
+  },
+  "n4610302": {
+    "release": "org.apache.iotdb:iotdb-parent:0.14.0-preview1",
+    "group": "",
+    "artifact": "",
+    "version": "0.14.0-preview1",
+    "has_cve": true
+  },
+  "n461404": {
+    "release": "org.apache.linkis:linkis-datasource:1.4.0",
+    "group": "",
+    "artifact": "",
+    "version": "1.4.0",
+    "has_cve": true
+  },
+  "n4782672": {
+    "release": "org.apache.hadoop:hadoop-common:2.2.0",
+    "group": "",
+    "artifact": "",
+    "version": "2.2.0",
+    "has_cve": true
+  },
+  "n5140860": {
+    "release": "org.richfaces:richfaces-core:4.5.4.Final",
+    "group": "",
+    "artifact": "",
+    "version": "4.5.4.Final",
+    "has_cve": true
+  },
+  "n5339430": {
+    "release": "org.apache.activemq:activemq-parent:4.1.1",
+    "group": "",
+    "artifact": "",
+    "version": "4.1.1",
+    "has_cve": true
+  },
+  "n5734896": {
+    "release": "org.apache.kylin:kylin-server-base:1.5.3",
+    "group": "",
+    "artifact": "",
+    "version": "1.5.3",
+    "has_cve": true
+  },
+  "n5747586": {
+    "release": "org.springframework:spring-core:3.1.1.RELEASE",
+    "group": "",
+    "artifact": "",
+    "version": "3.1.1.RELEASE",
+    "has_cve": true
+  },
+  "n592742": {
+    "release": "org.keycloak:keycloak-services:1.5.1.Final",
+    "group": "",
+    "artifact": "",
+    "version": "1.5.1.Final",
+    "has_cve": true
+  },
+  "n6335625": {
+    "release": "org.richfaces:richfaces-core:4.5.3.Final",
+    "group": "",
+    "artifact": "",
+    "version": "4.5.3.Final",
+    "has_cve": true
+  },
+  "n6412809": {
+    "release": "org.apache.kylin:kylin-server-base:2.3.2",
+    "group": "",
+    "artifact": "",
+    "version": "2.3.2",
+    "has_cve": true
+  },
+  "n6412810": {
+    "release": "org.apache.kylin:kylin-server-base:2.3.1",
+    "group": "",
+    "artifact": "",
+    "version": "2.3.1",
+    "has_cve": true
+  },
+  "n6428361": {
+    "release": "org.apache.hadoop:hadoop-common:2.0.5-alpha",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.5-alpha",
+    "has_cve": true
+  },
+  "n6702273": {
+    "release": "org.glassfish.main.web:web-core:4.0",
+    "group": "",
+    "artifact": "",
+    "version": "4.0",
+    "has_cve": true
+  },
+  "n6791027": {
+    "release": "org.bouncycastle:bcprov-jdk15:1.43",
+    "group": "",
+    "artifact": "",
+    "version": "1.43",
+    "has_cve": true
+  },
+  "n6842987": {
+    "release": "org.apache.struts:struts2-core:2.0.11",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.11",
+    "has_cve": true
+  },
+  "n6842992": {
+    "release": "org.apache.struts:struts2-core:2.0.12",
+    "group": "",
+    "artifact": "",
+    "version": "2.0.12",
+    "has_cve": true
+  },
+  "n6861851": {
+    "release": "org.apache.struts:struts2-core:2.3.20",
+    "group": "",
+    "artifact": "",
+    "version": "2.3.20",
+    "has_cve": true
+  },
+  "n6861857": {
+    "release": "org.apache.struts:struts2-core:2.3.24",
+    "group": "",
+    "artifact": "",
+    "version": "2.3.24",
+    "has_cve": true
+  },
+  "n6927381": {
+    "release": "org.apache.linkis:linkis:1.1.0",
+    "group": "",
+    "artifact": "",
+    "version": "1.1.0",
+    "has_cve": true
+  },
+  "n7197430": {
+    "release": "org.owasp.antisamy:antisamy:1.5",
+    "group": "",
+    "artifact": "",
+    "version": "1.5",
+    "has_cve": true
+  },
+  "n7628381": {
+    "release": "org.apache.zeppelin:zeppelin-web:0.6.0",
+    "group": "",
+    "artifact": "",
+    "version": "0.6.0",
+    "has_cve": true
+  },
+  "n7922230": {
+    "release": "org.openidentityplatform.openam:openam-oauth2:14.5.4",
+    "group": "",
+    "artifact": "",
+    "version": "14.5.4",
+    "has_cve": true
+  },
+  "n7922233": {
+    "release": "org.openidentityplatform.openam:openam-oauth2:14.5.3",
+    "group": "",
+    "artifact": "",
+    "version": "14.5.3",
+    "has_cve": true
+  },
+  "n8442751": {
+    "release": "org.bouncycastle:bcprov-jdk15on:1.57",
+    "group": "",
+    "artifact": "",
+    "version": "1.57",
+    "has_cve": true
+  },
+  "n8442760": {
+    "release": "org.bouncycastle:bcprov-jdk15on:1.58",
+    "group": "",
+    "artifact": "",
+    "version": "1.58",
+    "has_cve": true
+  },
+  "n8472835": {
+    "release": "com.ning:async-http-client:1.3.4",
+    "group": "",
+    "artifact": "",
+    "version": "1.3.4",
+    "has_cve": true
+  },
+  "n8472840": {
+    "release": "com.ning:async-http-client:1.3.1",
+    "group": "",
+    "artifact": "",
+    "version": "1.3.1",
+    "has_cve": true
+  },
+  "n8476742": {
+    "release": "com.ning:async-http-client:1.7.6",
+    "group": "",
+    "artifact": "",
+    "version": "1.7.6",
+    "has_cve": true
+  },
+  "n8863028": {
+    "release": "org.apache.activemq:activemq-client:5.8.0",
+    "group": "",
+    "artifact": "",
+    "version": "5.8.0",
+    "has_cve": true
+  },
+  "n8953396": {
+    "release": "ro.pippo:pippo-core:0.4.2",
+    "group": "",
+    "artifact": "",
+    "version": "0.4.2",
+    "has_cve": true
+  },
+  "n8953399": {
+    "release": "ro.pippo:pippo-core:0.4.0",
+    "group": "",
+    "artifact": "",
+    "version": "0.4.0",
+    "has_cve": true
+  },
+  "n8956216": {
+    "release": "ro.pippo:pippo-core:0.9.0",
+    "group": "",
+    "artifact": "",
+    "version": "0.9.0",
+    "has_cve": true
+  },
+  "n908982": {
+    "release": "org.xwiki.commons:xwiki-commons-xml:9.4-rc-1",
+    "group": "",
+    "artifact": "",
+    "version": "9.4-rc-1",
+    "has_cve": true
+  },
+  "n9494448": {
+    "release": "org.apache.hugegraph:hugegraph-api:1.0.0",
+    "group": "",
+    "artifact": "",
+    "version": "1.0.0",
+    "has_cve": true
+  },
+  "n9839344": {
+    "release": "com.jfinal:jfinal:1.8",
+    "group": "",
+    "artifact": "",
+    "version": "1.8",
+    "has_cve": true
+  },
+  "n9839351": {
+    "release": "com.jfinal:jfinal:1.9",
+    "group": "",
+    "artifact": "",
+    "version": "1.9",
+    "has_cve": true
+  },
+  "n9839354": {
+    "release": "com.jfinal:jfinal:1.6",
+    "group": "",
+    "artifact": "",
+    "version": "1.6",
+    "has_cve": true
+  },
+  "n990718": {
+    "release": "org.apache.tomee:tomee-webapp:7.0.0-M1",
+    "group": "",
+    "artifact": "",
+    "version": "7.0.0-M1",
+    "has_cve": true
+  }
+}

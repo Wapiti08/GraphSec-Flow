@@ -1,0 +1,31 @@
+cve_id,nvd_url,osv_url,top_predicted_nodes,annotator_name,root_package,root_version,confidence_1to5,agrees_with_predicted_root,notes,prediction_time_ms
+CVE-2018-1000613,https://nvd.nist.gov/vuln/detail/CVE-2018-1000613,https://osv.dev/vulnerability/CVE-2018-1000613,n1218153|n8442751|n8442760,Legion of the bouncy castle,Bouncy Castle Java Cryptography APIs,"[1.58, 1.60)",5,Partial,n1218153 is not hitting,2078.1
+CVE-2022-4361,https://nvd.nist.gov/vuln/detail/CVE-2022-4361,https://osv.dev/vulnerability/CVE-2022-4361,n5974396|n592742|n2793664,Keycloak,Key cloak,"[*,21.1.2)",5,Yes,,1003
+CVE-2023-49485,https://nvd.nist.gov/vuln/detail/CVE-2023-49485,https://osv.dev/vulnerability/CVE-2023-49485,n9840774|n9839354|n9839344,JFinalCMS,JFinalCMS,5.0.0,5,Yes,,1043.8
+CVE-2020-1937,https://nvd.nist.gov/vuln/detail/CVE-2020-1937,https://osv.dev/vulnerability/CVE-2020-1937,n6412175|n6412810|n6412809,Kylin,Kylin,"[2.3.0,2.3.2],[2.4.0,2.4.1],[2.5.0,2.5.2],[2.6.0,2.6.4]",5,Yes,,969.2
+CVE-2021-21342,https://nvd.nist.gov/vuln/detail/CVE-2021-21342,https://osv.dev/vulnerability/CVE-2021-21342,n3976017|n10811843|n10811846,XStream,XStream,"[*,1.4.16)",5,Yes,,1608.3
+CVE-2018-12532,https://nvd.nist.gov/vuln/detail/CVE-2018-12532,https://osv.dev/vulnerability/CVE-2018-12532,n6335625|n5140860|n3839887,RF-14309,Jboss rich faces,"[4.5.3,4.5.17]",5,Yes,,1573.1
+CVE-2020-25802,https://nvd.nist.gov/vuln/detail/CVE-2020-25802,https://osv.dev/vulnerability/CVE-2020-25802,n1975263|n1975269|n1975271,Crafter Studio of Crafter CMS,Crafter Studio of Crafter CMS,"[3.0.0,3.0.27),[3.1.0,3.1.7)",5,Yes,,1043.1
+CVE-2011-3923,https://nvd.nist.gov/vuln/detail/CVE-2011-3923,https://osv.dev/vulnerability/CVE-2011-3923,n9267263|n6842987|n6842992,Apache struts,Apache struts,"[2.0.0,2.3.1.2)",5,Partial,n9267263 is not hitting,1017.2
+CVE-2013-4444,https://nvd.nist.gov/vuln/detail/CVE-2013-4444,https://osv.dev/vulnerability/CVE-2013-4444,n9267263|n6842987|n6842992,Apache tomcat,Apache tomcat,"[*,7.0.40)",5,No,,978.6
+CVE-2024-8646,https://nvd.nist.gov/vuln/detail/CVE-2024-8646,https://osv.dev/vulnerability/CVE-2024-8646,n12478928|n10425301|n3163965,Eclipse Glassfish,Eclipse Glassfish,"[*,7.0.10)",5,Yes,,968.8
+CVE-2023-6563,https://nvd.nist.gov/vuln/detail/CVE-2023-6563,https://osv.dev/vulnerability/CVE-2023-6563,n282429|n2715513|n2263846,Keycloak,Keycloak,"[*,21.0.0)",5,Yes,,1027.3
+CVE-2012-0803,https://nvd.nist.gov/vuln/detail/CVE-2012-0803,https://osv.dev/vulnerability/CVE-2012-0803,n9267263|n6842987|n6842992,Apache CXF,Apache CXF,"2.4.5, 2.5.1",5,No,,994.1
+CVE-2020-13942,https://nvd.nist.gov/vuln/detail/CVE-2020-13942,https://osv.dev/vulnerability/CVE-2020-13942,n10601914|n908982|n1069355,Apache Unomi,Apache Unomi,"[1.5.0, 1.5.2)",5,Partial,"n908982 is not hitting, n1069355 with wrong version",978.6
+CVE-2024-31860,https://nvd.nist.gov/vuln/detail/CVE-2024-31860,https://osv.dev/vulnerability/CVE-2024-31860,n3829010|n10293634|n461404,Apache Zeppelin,Apache Zeppelin,"[0.9.0, 0.11.0)",5,Partial,"n461404 is not hitting, n3829010 wit wrong version",1022.5
+CVE-2023-43643,https://nvd.nist.gov/vuln/detail/CVE-2023-43643,https://osv.dev/vulnerability/CVE-2023-43643,n7886945|n7197430|n2393824,AntiSamy,AntiSamy,"[*,1.7.4)",5,Yes,n2393824 is not hitting,990.7
+CVE-2018-20059,https://nvd.nist.gov/vuln/detail/CVE-2018-20059,https://osv.dev/vulnerability/CVE-2018-20059,n8953399|n8953396|n8956216,Pippo,Pippo,"[*,1.11.0]",5,Yes,,1437.2
+CVE-2018-8012,https://nvd.nist.gov/vuln/detail/CVE-2018-8012,https://osv.dev/vulnerability/CVE-2018-8012,n1627832|n6428361|n4782672,Zookeeper,Zookeeper,"[*,3.4.10),[3.5.0,3.5.3]",5,Partial,n6428361 and n4782672 are not hitting,1403.2
+CVE-2016-5001,https://nvd.nist.gov/vuln/detail/CVE-2016-5001,https://osv.dev/vulnerability/CVE-2016-5001,n201849|n10217150|n6428361,Hadoop,Hadoop,"[*,2.6.3],2.7.0,2.7.1",5,Yes,,1583
+CVE-2016-3081,https://nvd.nist.gov/vuln/detail/CVE-2016-3081,https://osv.dev/vulnerability/CVE-2016-3081,n6861851|n6861857|n3690233,Apache Struts,Apache Struts,"[2.3.19,2.3.20.2],[2.3.21,2.3.24.1],[2.3.25,2.3.28]",5,Yes,,1528.2
+CVE-2023-29234,https://nvd.nist.gov/vuln/detail/CVE-2023-29234,https://osv.dev/vulnerability/CVE-2023-29234,n4610302|n9494448|n13425591,Apache dubbo,Apache dubbo,"[3.1.0, 3.1.10],[3.2.0,3.2.4]",5,No,,872.1
+CVE-2013-7397,https://nvd.nist.gov/vuln/detail/CVE-2013-7397,https://osv.dev/vulnerability/CVE-2013-7397,n8472840|n8472835|n8476742,AHC,Async-http-client,"[*,1.9.0]",5,Yes,,1434.8
+CVE-2016-1000342,https://nvd.nist.gov/vuln/detail/CVE-2016-1000342,https://osv.dev/vulnerability/CVE-2016-1000342,n6791027|n10521928|n10521934,Bouncy castle JCE,Bouncy Castle,"[*,1.55]",5,Yes,,1265.7
+CVE-2017-3161,https://nvd.nist.gov/vuln/detail/CVE-2017-3161,https://osv.dev/vulnerability/CVE-2017-3161,n11028552|n11243780|n11028550,Apache Hadoop,Apache Hadoop,"[*,2.6.5]",5,Yes,,1433.7
+CVE-2018-1000665,https://nvd.nist.gov/vuln/detail/CVE-2018-1000665,https://osv.dev/vulnerability/CVE-2018-1000665,n12719760|n12719757|n12719752,Dojo,Dojo,"[*,1.13.0]",5,Yes,,1424.7
+CVE-2018-8031,https://nvd.nist.gov/vuln/detail/CVE-2018-8031,https://osv.dev/vulnerability/CVE-2018-8031,n7922233|n7922230|n7923052,Tomee-webapp,Tommy,"[*,7.0.5)",5,No,,977.6
+CVE-2023-40037,https://nvd.nist.gov/vuln/detail/CVE-2023-40037,https://osv.dev/vulnerability/CVE-2023-40037,n6927381|n5747586|n1284928,Apache Nifi,Apache Nifi,"[1.21.0,1.23.1)",5,No,,896.4
+CVE-2014-3600,https://nvd.nist.gov/vuln/detail/CVE-2014-3600,https://osv.dev/vulnerability/CVE-2014-3600,n9727835|n2136008|n2136001,Apache ActiveMQ,Apache ActiveMQ,"[5.0.0,5.10.1)",5,No,,1003.6
+CVE-2023-31454,https://nvd.nist.gov/vuln/detail/CVE-2023-31454,https://osv.dev/vulnerability/CVE-2023-31454,n11971736|n10930939|n10922886,Apache InLong,Apache InLong,"[1.2.0,1.6.0]",5,Yes,,915.6
+CVE-2022-38648,https://nvd.nist.gov/vuln/detail/CVE-2022-38648,https://osv.dev/vulnerability/CVE-2022-38648,n7630299|n10143523|n11433216,Apache Batik,Apache Batik,"[1.0,1.14]",5,Partial,n7630299 is not hitting,1018.3
+CVE-2014-0097,https://nvd.nist.gov/vuln/detail/CVE-2014-0097,https://osv.dev/vulnerability/CVE-2014-0097,n9267263|n6842987|n6842992,Spring security,Spring security,"[3.2.0,3.2.1],[3.1.0,3.1.5]",5,No,,1019.9
