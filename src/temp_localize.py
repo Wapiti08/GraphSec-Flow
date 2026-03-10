@@ -52,7 +52,11 @@ class TemporalLocalizer:
         cve_embedder: CVEVector,
         node_cve_scores: Dict,
         timestamps: Dict,
-        node_texts: Optional[Dict] = None
+        node_texts: Optional[Dict] = None,
+        # Ablation flags
+        use_vector_search: bool = True,
+        use_temporal: bool = True,
+        use_community: bool = True
     ):
         """
         Args:
@@ -61,12 +65,20 @@ class TemporalLocalizer:
             node_cve_scores: {node_id: cve_score}
             timestamps: {node_id: timestamp}
             node_texts: {node_id: [cve_texts]} for vector search
+            use_vector_search: Enable/disable Vamana vector search (ablation)
+            use_temporal: Enable/disable temporal analysis (ablation)
+            use_community: Enable/disable community detection (ablation)
         """
         self.graph = dep_graph
         self.embedder = cve_embedder
         self.node_cve_scores = node_cve_scores
         self.timestamps = timestamps
         self.node_texts = node_texts or {}
+
+        # Ablation flags
+        self.use_vector_search = use_vector_search
+        self.use_temporal = use_temporal
+        self.use_community = use_community
 
         # build package index
         self._build_package_index()
@@ -134,7 +146,7 @@ class TemporalLocalizer:
         cve_description: str,
         discovered_version: Optional[str] = None,
         k: int = 15,
-        use_vector_search: bool = True
+        use_vector_search: Optional[bool] = None  # Override instance flag if needed
     )-> Dict:
         """
         Main algorithm: localize the origin version of a CVE
@@ -161,6 +173,9 @@ class TemporalLocalizer:
         """
         start_time = time.perf_counter()
 
+        # Use instance flag unless overridden
+        use_vector = use_vector_search if use_vector_search is not None else self.use_vector_search
+
         # Extract package from discovered_version
         if discovered_version and '@' in discovered_version:
             package = discovered_version.split('@')[0]
@@ -178,7 +193,7 @@ class TemporalLocalizer:
             return self._failed_result(cve_id, f'No versions found for {package}')
         
         # Strategy: Combine vector search + temporal analysis
-        if use_vector_search and self.vamana:
+        if use_vector and self.vamana:
             result = self._localize_with_vector_search(
                 cve_id, cve_description, package, versions_info, k
             )
@@ -222,28 +237,38 @@ class TemporalLocalizer:
         package_node_ids = {v['node_id'] for v in versions_info}
         package_neighbors = [n for n in neighbors if n in package_node_ids]
         
+        # If community detection is disabled, consider more candidates
+        if not self.use_community:
+            # Include more neighbors from related packages (broader search)
+            # This simulates not using community-based filtering
+            # For version localization, we still filter by package but consider
+            # all versions (not just clustered ones)
+            pass  # Already using all package versions
+        
         if not package_neighbors:
             # Fallback to temporal-only
             return self._localize_temporal_only(cve_id, package, versions_info, None)
         
-        # 3. Rank candidates by: time (early) + CVE similarity
-        ranked_candidates = self._rank_candidates_temporal(
-            package_neighbors,
-            versions_info,
-            explanations
-        )
-
-        # Calculate confidence dynamically
-        confidence = self._calculate_confidence(
-                method='vector_temporal',
-                origin_node=origin_node,
-                num_candidates=len(package_neighbors),
-                version_sequence=version_seq,
-                explanations=explanations
+        # 3. Rank candidates
+        # If temporal is disabled, use only similarity ranking
+        if not self.use_temporal:
+            # Rank purely by similarity (no time consideration)
+            ranked_candidates = self._rank_candidates_by_similarity(
+                package_neighbors,
+                explanations
+            )
+        else:
+            # Rank by: time (early) + CVE similarity
+            ranked_candidates = self._rank_candidates_temporal(
+                package_neighbors,
+                versions_info,
+                explanations
             )
 
         # 4. Select origin (earliest with high score)
-        origin_node = ranked_candidates[0] if ranked_candidates else None        
+        origin_node = ranked_candidates[0] if ranked_candidates else None     
+
+
         if origin_node:
             # Get version info
             origin_info = next((v for v in versions_info if v['node_id'] == origin_node), None)
@@ -254,6 +279,15 @@ class TemporalLocalizer:
                 versions_info,
                 origin_info['version'],
                 discovered_info['version']
+            )
+
+            # Calculate confidence dynamically
+            confidence = self._calculate_confidence(
+                method='vector_temporal',
+                origin_node=origin_node,
+                num_candidates=len(package_neighbors),
+                version_sequence=version_seq,
+                explanations=explanations
             )
 
             return {
@@ -280,6 +314,43 @@ class TemporalLocalizer:
         discovered_version: Optional[str]
     ) -> Dict:
         """Localize using only temporal information"""
+
+        # If temporal is disabled, use conservative estimate
+        if not self.use_temporal:
+            # Conservative: go back 3 versions from discovered (or use earliest)
+            if discovered_version and '@' in discovered_version:
+                discovered_ver = discovered_version.split('@')[1]
+                discovered_info = next((v for v in versions_info if v['version'] == discovered_ver), None)
+                
+                if discovered_info:
+                    disc_idx = versions_info.index(discovered_info)
+                    origin_idx = max(0, disc_idx - 3)
+                    origin_info = versions_info[origin_idx]
+                else:
+                    origin_info = versions_info[0]
+            else:
+                origin_info = versions_info[0]
+            
+            discovered_info = versions_info[-1]
+            
+            version_seq = [v['version'] for v in versions_info]
+            confidence = self._calculate_confidence(
+                method='static_conservative',
+                num_candidates=len(versions_info),
+                version_sequence=version_seq
+            )
+            
+            return {
+                'cve_id': cve_id,
+                'package': package,
+                'origin_version': f"{package}@{origin_info['version']}",
+                'discovered_version': f"{package}@{discovered_info['version']}",
+                'confidence': confidence,
+                'method': 'static_conservative',
+                'version_sequence': version_seq,
+                'ranked_candidates': [f"{package}@{v['version']}" for v in versions_info[:10]],
+                'num_candidates': len(versions_info)
+            }
 
         # Strategy: Use time window around discovered version
         if discovered_version and '@' in discovered_version:
@@ -352,6 +423,34 @@ class TemporalLocalizer:
         }
     
     
+    def _rank_candidates_by_similarity(
+        self,
+        candidates: List,
+        explanations: Optional[Dict]
+    ) -> List:
+        """
+        Rank candidates purely by similarity (no temporal consideration)
+        Used when use_temporal=False
+        """
+        if not explanations:
+            return candidates
+        
+        scores = {}
+        for node_id in candidates:
+            if node_id in explanations:
+                info = explanations[node_id]
+                # Convert distance to similarity
+                dist = float(info.get('best_similarity', 0))
+                sim_score = 1.0 / (1.0 + abs(dist) + 1e-8)
+                scores[node_id] = sim_score
+            else:
+                scores[node_id] = 0.0
+        
+        # Sort by similarity only
+        ranked = sorted(candidates, key=lambda n: scores.get(n, 0), reverse=True)
+        return ranked
+        
+
     def _rank_candidates_temporal(
         self,
         candidates: List,
@@ -624,8 +723,6 @@ class ConservativeBaselineLocalizer:
             'method': f'conservative_{self.n_versions_back}back',
             'version_sequence': [v['version'] for v in versions[origin_idx:disc_idx+1]]
         }
-
-
 
 
 
