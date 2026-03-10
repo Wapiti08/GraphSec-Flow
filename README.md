@@ -79,13 +79,7 @@ python3 graph_cve.py --dep_graph {your local path}/data/dep_graph.pkl --cve_json
 - generate ground truth data
 ```
 # with depth 3 without time constraint:
-python3 gt_builder.py \
-  --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl \
-  --cve-meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl \
-  --out-root /workspace/GraphSec-Flow/data \
-  --out-paths /workspace/GraphSec-Flow/data \
-  --no-time-constraint \
-  --max-depth 3
+python3 gt_builder_parallel.py   --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl   --cve-meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl   --out-root /workspace/GraphSec-Flow/data   --out-paths /workspace/GraphSec-Flow/data   --no-time-constraint   --max-depth 3   --num-workers 64
 ```
 
 - Root Cause Analysis
@@ -150,26 +144,9 @@ EOF
 - Benchmark
 ```
 
-# baseline benchmark
-nohup python bench/benchmark.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark.txt 2>&1 &
-
-## length 6 
-nohup python bench/benchmark.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark_6.txt 2>&1 &
-
-# random benchmark
-nohup python bench/benchmark.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/random_benchmark.txt 2>&1 &
-
-## length 6
-nohup python bench/benchmark.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl     --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl   > logs/random_benchmark_6.txt 2>&1 &
-
-## optimized version
-nohup python bench/benchmark_opt.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark_6_opt.txt 2>&1 &
-
-nohup python bench/benchmark_opt.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl    --ref-layer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/random_benchmark_6_opt.txt 2>&1 &
-
-nohup python bench/benchmark_opt.py     --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/random_benchmark_opt.txt 2>&1 &
-
-nohup python bench/benchmark_opt.py     --dep-graph data/dep_graph_cve.pkl     --ref-layer data/ref_paths_layer.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve data/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/baseline_benchmark_opt.txt 2>&1 &
+nohup python bench/benchmark.py     --dep-graph data/dep_graph_cve_2hop_random.pkl     --ref-l
+ayer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve dat
+a/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/benchmark_2hop_6_random_opt.txt 2>&1 &
 
 ```
 

@@ -221,6 +221,8 @@ class CVEOriginAnalyzer:
 
         # ranking by timestamp
         result.sort(key=lambda x: self.timestamps.get(x[0], float('inf')))
+
+        return result
         
     def _graph_based_search(
         self,
@@ -466,4 +468,83 @@ def test_enhanced_analyzer():
             break
 
 if __name__ == "__main__":
-    test_enhanced_analyzer()
+    # test_enhanced_analyzer()
+    import pickle
+    from pathlib import Path
+    data_dir = Path.cwd().joinpath("data")
+
+    with open(data_dir / "dep_graph_cve.pkl", "rb") as f:
+        G = pickle.load(f)
+
+    timestamps = {n: float(G.nodes[n]["timestamp"]) 
+                for n in G.nodes() 
+                if "timestamp" in G.nodes[n]}
+
+    analyzer = CVEOriginAnalyzer(G, timestamps)
+
+    print("\n" + "="*70)
+    print(" Batch Analysis - All CVEs ".center(70, "="))
+    print("="*70)
+
+    # Batch analysis
+    all_origins = {}
+    count = 0
+
+    for node in G.nodes():
+        cve_list = G.nodes[node].get('cve_list', [])
+        
+        for cve_entry in cve_list:
+            if isinstance(cve_entry, dict):
+                cve_id = cve_entry.get('name', '')
+            else:
+                cve_id = str(cve_entry)
+            
+            if not cve_id:
+                continue
+            
+            try:
+                result = analyzer.analyze_origin(
+                    node, cve_id,
+                    enable_version_search=True  # Enable version search
+                )
+                all_origins[(node, cve_id)] = result
+                
+                count += 1
+                if count % 1000 == 0:
+                    print(f"[Progress] Analyzed {count} CVE instances...")
+            
+            except Exception as e:
+                print(f"[WARN] Failed: {node}/{cve_id}: {e}")
+
+    # Statistics
+    total = len(all_origins)
+    original = sum(1 for r in all_origins.values() if r.origin_type == 'original')
+    propagated = sum(1 for r in all_origins.values() if r.origin_type == 'propagated')
+    version_improved = sum(
+        1 for r in all_origins.values() 
+        if r.origin_type == 'propagated' 
+        and r.evidence.get('found_via_version_search')
+    )
+
+    print("\n" + "="*70)
+    print(" Final Statistics ".center(70, "="))
+    print("="*70)
+    print(f"\nTotal: {total}")
+    print(f"  Original CVEs: {original} ({original/total:.1%})")
+    print(f"  Propagated CVEs: {propagated} ({propagated/total:.1%})")
+    print(f"\nVersion search improved: {version_improved}/{propagated} ({version_improved/propagated:.1%})")
+
+    # Save results
+    with open(data_dir / "cve_origins.pkl", "wb") as f:
+        pickle.dump({
+            'all_origins': all_origins,
+            'stats': {
+                'total': total,
+                'original': original,
+                'propagated': propagated,
+                'version_improved': version_improved
+            }
+        }, f)
+
+    print(f"\n✓ Results saved to {data_dir / 'cve_origins.pkl'}")
+    print("="*70)
