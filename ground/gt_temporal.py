@@ -95,6 +95,83 @@ class TemporalGTBuilder:
         
         print(f"  Indexed {len(self.package_versions)} packages")
     
+    @staticmethod
+    def _is_valid_cve_id(cve_id: str) -> bool:
+        """
+        Check if string is a valid CVE ID
+        
+        Valid formats:
+        - CVE-YYYY-NNNNN (e.g., CVE-2023-12345)
+        - CVE-YYYY-NNNNNN (e.g., CVE-2023-123456)
+        - CVE-YYYY-NNNNNNN (e.g., CVE-2023-1234567)
+        
+        Invalid:
+        - n9949684 (node ID)
+        - BIT-jenkins-2023-36478 (non-standard format)
+        """
+        if not cve_id or not isinstance(cve_id, str):
+            return False
+        
+        # Must start with "CVE-"
+        if not cve_id.startswith('CVE-'):
+            return False
+        
+        # Must have format CVE-YYYY-NNNNN+
+        parts = cve_id.split('-')
+        if len(parts) != 3:
+            return False
+        
+        try:
+            year = int(parts[1])
+            number = int(parts[2])
+            
+            # Year should be reasonable (1999-2030)
+            if year < 1999 or year > 2030:
+                return False
+            
+            # Number should be positive
+            if number <= 0:
+                return False
+            
+            return True
+        except ValueError:
+            return False
+    
+    @staticmethod
+    def _extract_cve_id_from_records(cve_records: List[Dict]) -> Optional[str]:
+        """
+        Extract CVE ID from record aliases
+        
+        Args:
+            cve_records: List of CVE record dictionaries
+        
+        Returns:
+            First valid CVE-YYYY-NNNNN format ID found, or None
+        
+        Example:
+            records = [{
+                'name': 'BIT-jenkins-2023-36478',
+                'aliases': ['CVE-2023-36478', 'GHSA-wgh7-54f2-x98r']
+            }]
+            → Returns 'CVE-2023-36478'
+        """
+        for record in cve_records:
+            # Check aliases field
+            aliases = record.get('aliases', []) or []
+            for alias in aliases:
+                if TemporalGTBuilder._is_valid_cve_id(alias):
+                    return alias
+            
+            # Also check builder_payload aliases
+            payload = record.get('builder_payload', {})
+            if payload:
+                payload_aliases = payload.get('aliases', []) or []
+                for alias in payload_aliases:
+                    if TemporalGTBuilder._is_valid_cve_id(alias):
+                        return alias
+        
+        return None
+
     def _parse_node(self, node_id, node_data):
         """Extract package and version from graph node"""
         node_str = str(node_id)
@@ -328,11 +405,12 @@ class TemporalGTBuilder:
         print(" TEMPORAL LOCALIZATION GT GENERATION ".center(70, "="))
         print(f"{'='*70}\n")
         
-        print(f"Processing {len(self.cve_meta)} CVE entries...")
+        print(f"Processing {len(self.cve_meta)} node entries (extracting CVE IDs from aliases)...")
         
         gt_entries = []
         stats = {
-            'total': 0,
+            'total_nodes': 0,
+            'has_cve_alias': 0,
             'success': 0,
             'high_conf': 0,
             'medium_conf': 0,
@@ -341,11 +419,20 @@ class TemporalGTBuilder:
             'by_method': defaultdict(int)
         }
         
-        for cve_id, cve_records in self.cve_meta.items():
-            stats['total'] += 1
+        for node_id, cve_records in self.cve_meta.items():
+            stats['total_nodes'] += 1
             
-            if stats['total'] % 100 == 0:
-                print(f"  Progress: {stats['total']}/{len(self.cve_meta)}")
+            # Extract CVE ID from aliases
+            cve_id = self._extract_cve_id_from_records(cve_records)
+            
+            if not cve_id:
+                # No CVE alias found in this node's records
+                continue
+            
+            stats['has_cve_alias'] += 1
+            
+            if stats['has_cve_alias'] % 100 == 0:
+                print(f"  Progress: {stats['has_cve_alias']} CVEs extracted from {stats['total_nodes']} nodes")
             
             # Extract origin version
             result = self.extract_origin_version(cve_id, cve_records)
@@ -446,28 +533,30 @@ class TemporalGTBuilder:
         print(" STATISTICS ".center(70, "="))
         print(f"{'='*70}")
         
-        total = stats['total']
+        total_nodes = stats['total_nodes']
+        has_cve = stats['has_cve_alias']
         success = stats['success']
         
-        print(f"\nTotal CVEs: {total}")
-        print(f"Successfully extracted: {success} ({success/total*100:.1f}%)")
+        print(f"\nTotal nodes in metadata: {total_nodes}")
+        print(f"Nodes with CVE aliases: {has_cve}")
+        print(f"Successfully extracted origin: {success} ({success/has_cve*100 if has_cve > 0 else 0:.1f}%)")
         
         print(f"\nBy Confidence:")
-        print(f"  High (≥0.8):      {stats['high_conf']:4d} ({stats['high_conf']/total*100:5.1f}%)")
-        print(f"  Medium (0.5-0.8): {stats['medium_conf']:4d} ({stats['medium_conf']/total*100:5.1f}%)")
-        print(f"  Low (<0.5):       {stats['low_conf']:4d} ({stats['low_conf']/total*100:5.1f}%)")
-        print(f"  Failed:           {stats['failed']:4d} ({stats['failed']/total*100:5.1f}%)")
+        print(f"  High (≥0.8):      {stats['high_conf']:4d} ({stats['high_conf']/has_cve*100 if has_cve > 0 else 0:5.1f}%)")
+        print(f"  Medium (0.5-0.8): {stats['medium_conf']:4d} ({stats['medium_conf']/has_cve*100 if has_cve > 0 else 0:5.1f}%)")
+        print(f"  Low (<0.5):       {stats['low_conf']:4d} ({stats['low_conf']/has_cve*100 if has_cve > 0 else 0:5.1f}%)")
+        print(f"  Failed:           {stats['failed']:4d} ({stats['failed']/has_cve*100 if has_cve > 0 else 0:5.1f}%)")
         
         print(f"\nBy Method:")
         for method, count in sorted(stats['by_method'].items(), key=lambda x: x[1], reverse=True):
-            print(f"  {method:25s}: {count:4d} ({count/total*100:5.1f}%)")
+            print(f"  {method:25s}: {count:4d} ({count/has_cve*100 if has_cve > 0 else 0:5.1f}%)")
         
         print(f"{'='*70}\n")
         
-        if success / total >= 0.7:
+        if has_cve > 0 and success / has_cve >= 0.7:
             print("✅ Success rate ≥ 70% - Good for automated GT")
         else:
-            print(f"⚠️  Success rate {success/total*100:.1f}% - May need manual annotation")
+            print(f"⚠️  Success rate {success/has_cve*100 if has_cve > 0 else 0:.1f}% - May need manual annotation")
         
         print(f"{'='*70}\n")
 

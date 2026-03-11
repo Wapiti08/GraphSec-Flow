@@ -143,10 +143,14 @@ EOF
 
 - Benchmark
 ```
-
-nohup python bench/benchmark.py     --dep-graph data/dep_graph_cve_2hop_random.pkl     --ref-l
-ayer data/ref_paths_layer_full_6.jsonl     --node-texts data/nodeid_to_texts.pkl     --cve-meta data/cve_records_for_meta.pkl     --per-cve dat
-a/per_cve_scores.pkl     --node-scores data/node_cve_scores.pkl     > logs/benchmark_2hop_6_random_opt.txt 2>&1 &
+python bench/run_all_eval.py \
+  --gt data/gt_temporal.jsonl \
+  --dep-graph data/dep_graph_cve.pkl \
+  --cve-meta data/cve_records_for_meta.pkl \
+  --node-texts data/nodeid_to_texts.pkl \
+  --node-scores data/node_cve_scores.pkl \
+  --output-dir results/test \
+  --max-samples 10
 
 ```
 

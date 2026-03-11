@@ -201,12 +201,56 @@ class CaseStudyAnalyzer:
         
         # CVE Description (if available)
         if cve_id in self.cve_metadata:
-            meta = self.cve_metadata[cve_id]
-            desc = meta.get('description', 'N/A')
-            if desc and desc != 'N/A':
-                lines.append("### CVE Description")
-                lines.append(f"> {desc[:200]}...")
-                lines.append("")
+            try:
+                records = self.cve_metadata[cve_id]
+
+                # handle different metadata formats
+                desc = None
+
+                if isinstance(records, list) and len(records) > 0:
+                    # records is a list
+                    meta = records[0]
+
+                    if isinstance(meta, dict):
+                        # meta is a dict
+                        payload = meta.get('builder_payload', {})
+                        for field in ['details', 'summary', 'description']:
+                            if field in payload and payload[field]:
+                                desc = payload[field]
+                                break
+                    elif isinstance(meta, list):
+                        # meta is also a list (nested structure)
+                        if len(meta) > 0 and isinstance(meta[0], dict):
+                            payload = meta[0].get('builder_payload', {})
+                            for field in ['details', 'summary', 'description']:
+                                if field in payload and payload[field]:
+                                    desc = payload[field]
+                                    break
+                
+                elif isinstance(records, dict):
+                    # records is directly a dict
+                    for field in ['details', 'summary', 'description', 'builder_payload']:
+                        if field in records:
+                            if field == 'builder_payload':
+                                payload = records[field]
+                                for f in ['details', 'summary', 'description']:
+                                    if f in payload and payload[f]:
+                                        desc = payload[f]
+                                        break
+                            else:
+                                desc = records[field]
+                                break
+                        if desc:
+                            break
+                
+                if desc:
+                    lines.append("### CVE Description")
+                    lines.append(f"> {desc[:200]}...")
+                    lines.append("")
+            
+            except Exception as e:
+                # Silently skip if metadata format is unexpected
+                pass
         
         return lines
     
