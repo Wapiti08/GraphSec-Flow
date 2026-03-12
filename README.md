@@ -143,14 +143,8 @@ EOF
 
 - Benchmark
 ```
-python bench/run_all_eval.py \
-  --gt data/gt_temporal.jsonl \
-  --dep-graph data/dep_graph_cve.pkl \
-  --cve-meta data/cve_records_for_meta.pkl \
-  --node-texts data/nodeid_to_texts.pkl \
-  --node-scores data/node_cve_scores.pkl \
-  --output-dir results/test \
-  --max-samples 10
+python bench/run_all_eval.py   --gt data/gt_temporal.jsonl   --dep-graph data/dep_graph_cve.pkl   --cve-meta data/cve_records_for_meta.pkl   --node-texts data/nodeid_to_texts.pkl   --node-scores data/node_cve_scores.pkl   --output-dir results/  
+ --max-samples 10
 
 ```
 
