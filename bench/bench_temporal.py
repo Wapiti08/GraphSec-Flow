@@ -285,10 +285,42 @@ class TemporalLocalizationBenchmark:
                         )
                 else:
                     pred = {'origin_version': None, 'method': 'error'}
+
+                if i < 5: 
+                    print(f"\n{'='*70}")
+                    print(f"[DEBUG] Sample #{i+1}")
+                    print(f"{'='*70}")
+                    print(f"CVE ID: {cve_id}")
+                    print(f"Package: {package}")
+                    print(f"GT origin: {gt_entry.get('origin_version')}")
+                    print(f"GT discovered: {gt_entry.get('discovered_version')}")
+                    print(f"\nPrediction result:")
+                    print(f"  Type: {type(pred)}")
+                    print(f"  Full dict: {pred}")
+                    print(f"  origin_version: {pred.get('origin_version')}")
+                    print(f"  origin_version type: {type(pred.get('origin_version'))}")
+                    
+                    # check whether to convert
+                    origin_ver = pred.get('origin_version')
+                    if origin_ver and '@' not in str(origin_ver):
+                        print(f"  ⚠️ WARNING: origin_version doesn't contain '@'")
+                        print(f"     Might be a node ID instead of 'package@version'")
+                    print(f"{'='*70}\n")
+    
             except Exception as e:
-                print(f"  Error on {cve_id}: {e}")
+                print(f"\n{'!'*70}")
+                print(f"[ERROR] Exception occurred")
+                print(f"{'!'*70}")
+                print(f"CVE ID: {cve_id}")
+                print(f"Exception type: {type(e).__name__}")
+                print(f"Exception message: {e}")
+                print(f"\nFull traceback:")
+                import traceback
+                traceback.print_exc()
+                print(f"{'!'*70}\n")
+                # ==========================
                 pred = {'origin_version': None, 'method': 'error', 'error': str(e)}
-            
+                        
             # Compute metrics
             metrics = self._compute_single_metrics(gt_entry, pred)
             

@@ -8,12 +8,56 @@ Implements classic graph analysis methods adapted for version-level localization
 4. Community-only Localization (Louvain)
 
 These serve as strong baselines for comparison in the paper.
+
 """
 
 import networkx as nx
 from collections import defaultdict
 from typing import Dict, List, Optional
 import community as community_louvain  # python-louvain package
+
+
+def _extract_package_version(node_id, node_data):
+    """
+    Extract package and version from node
+    
+    Tries multiple strategies:
+    1. Node attributes (package, version)
+    2. Node attribute 'release' (format: package@version)
+    3. Node ID itself (if it's package@version format)
+    
+    Returns:
+        (package, version, version_string) or (None, None, None)
+    """
+    # Strategy 1: Direct attributes
+    package = node_data.get('package', '')
+    version = node_data.get('version', '')
+    
+    if package and version:
+        version_string = f"{package}@{version}"
+        return package, version, version_string
+    
+    # Strategy 2: 'release' attribute
+    release = node_data.get('release', '')
+    if release and '@' in release:
+        try:
+            pkg, ver = release.rsplit('@', 1)
+            return pkg, ver, release
+        except ValueError:
+            pass
+    
+    # Strategy 3: Node ID format
+    node_str = str(node_id)
+    if '@' in node_str:
+        try:
+            pkg, ver = node_str.rsplit('@', 1)
+            return pkg, ver, node_str
+        except ValueError:
+            pass
+    
+    # Failed to extract
+    return None, None, None
+
 
 class PageRankLocalizer:
     """
@@ -30,26 +74,34 @@ class PageRankLocalizer:
         self._build_package_index()
 
     def _build_package_index(self):
-        """Build package → versions index"""
-
+        """Build package → versions index (FIXED VERSION)"""
         self.package_versions = defaultdict(list)
-
+        
+        print("[PageRank] Building package index...")
+        
         for node_id in self.graph.nodes():
             node_data = self.graph.nodes[node_id]
-            node_str = str(node_id)
-
-            if '@' in node_str:
-                package, version = node_str.rsplit('@', 1)
+            
+            package, version, version_string = _extract_package_version(node_id, node_data)
+            
+            if package and version:
                 timestamp = node_data.get('timestamp', 0)
                 
                 self.package_versions[package].append({
                     'version': version,
                     'node_id': node_id,
-                    'timestamp': timestamp
+                    'timestamp': timestamp,
+                    'version_string': version_string
                 })
         
+        # Sort by timestamp
         for package in self.package_versions:
             self.package_versions[package].sort(key=lambda x: x['timestamp'])
+        
+        print(f"[PageRank] Found {len(self.package_versions)} unique packages")
+        if len(self.package_versions) > 0:
+            sample_pkg = list(self.package_versions.keys())[0]
+            print(f"[PageRank] Example: {sample_pkg} has {len(self.package_versions[sample_pkg])} versions")
 
     def localize_origin(self, cve_id, package, discovered_version=None, **kwargs):
         """Localize using PageRank"""
@@ -57,6 +109,8 @@ class PageRankLocalizer:
         versions = self.package_versions.get(package, [])
 
         if not versions:
+            print(f"[PageRank] WARNING: No versions found for package '{package}'")
+            print(f"[PageRank] Available packages: {list(self.package_versions.keys())[:10]}...")
             return {'origin_version': None, 'method': 'pagerank_failed'}
         
         # build version subgraph
@@ -70,8 +124,8 @@ class PageRankLocalizer:
             return {
                 'cve_id': cve_id,
                 'package': package,
-                'origin_version': f"{package}@{origin['version']}",
-                'discovered_version': f"{package}@{discovered['version']}",
+                'origin_version': origin['version_string'],  # Use version_string
+                'discovered_version': discovered['version_string'],
                 'confidence': 0.3,
                 'method': 'pagerank_fallback'
             }
@@ -104,8 +158,8 @@ class PageRankLocalizer:
         return {
             'cve_id': cve_id,
             'package': package,
-            'origin_version': f"{package}@{origin['version']}",
-            'discovered_version': f"{package}@{discovered['version']}",
+            'origin_version': origin['version_string'],  # Use version_string
+            'discovered_version': discovered['version_string'],
             'confidence': 0.5,
             'method': 'pagerank',
             'version_sequence': [v['version'] for v in versions]
@@ -125,25 +179,30 @@ class BetweennessLocalizer:
         self._build_package_index()
     
     def _build_package_index(self):
-        """Build package → versions index"""
+        """Build package → versions index (FIXED VERSION)"""
         self.package_versions = defaultdict(list)
+        
+        print("[Betweenness] Building package index...")
         
         for node_id in self.graph.nodes():
             node_data = self.graph.nodes[node_id]
-            node_str = str(node_id)
             
-            if '@' in node_str:
-                package, version = node_str.rsplit('@', 1)
+            package, version, version_string = _extract_package_version(node_id, node_data)
+            
+            if package and version:
                 timestamp = node_data.get('timestamp', 0)
                 
                 self.package_versions[package].append({
                     'version': version,
                     'node_id': node_id,
-                    'timestamp': timestamp
+                    'timestamp': timestamp,
+                    'version_string': version_string
                 })
         
         for package in self.package_versions:
             self.package_versions[package].sort(key=lambda x: x['timestamp'])
+        
+        print(f"[Betweenness] Found {len(self.package_versions)} unique packages")
     
     def localize_origin(self, cve_id, package, discovered_version=None, **kwargs):
         """Localize using Betweenness Centrality"""
@@ -151,6 +210,7 @@ class BetweennessLocalizer:
         versions = self.package_versions.get(package, [])
         
         if not versions:
+            print(f"[Betweenness] WARNING: No versions found for package '{package}'")
             return {'origin_version': None, 'method': 'betweenness_failed'}
         
         # Build version subgraph
@@ -163,8 +223,8 @@ class BetweennessLocalizer:
             return {
                 'cve_id': cve_id,
                 'package': package,
-                'origin_version': f"{package}@{origin['version']}",
-                'discovered_version': f"{package}@{discovered['version']}",
+                'origin_version': origin['version_string'],
+                'discovered_version': discovered['version_string'],
                 'confidence': 0.3,
                 'method': 'betweenness_fallback'
             }
@@ -196,8 +256,8 @@ class BetweennessLocalizer:
         return {
             'cve_id': cve_id,
             'package': package,
-            'origin_version': f"{package}@{origin['version']}",
-            'discovered_version': f"{package}@{discovered['version']}",
+            'origin_version': origin['version_string'],
+            'discovered_version': discovered['version_string'],
             'confidence': 0.5,
             'method': 'betweenness',
             'version_sequence': [v['version'] for v in versions]
@@ -219,25 +279,30 @@ class TemporalPageRankLocalizer:
         self._build_package_index()
     
     def _build_package_index(self):
-        """Build package → versions index"""
+        """Build package → versions index (FIXED VERSION)"""
         self.package_versions = defaultdict(list)
+        
+        print("[TemporalPageRank] Building package index...")
         
         for node_id in self.graph.nodes():
             node_data = self.graph.nodes[node_id]
-            node_str = str(node_id)
             
-            if '@' in node_str:
-                package, version = node_str.rsplit('@', 1)
+            package, version, version_string = _extract_package_version(node_id, node_data)
+            
+            if package and version:
                 timestamp = node_data.get('timestamp', 0)
                 
                 self.package_versions[package].append({
                     'version': version,
                     'node_id': node_id,
-                    'timestamp': timestamp
+                    'timestamp': timestamp,
+                    'version_string': version_string
                 })
         
         for package in self.package_versions:
             self.package_versions[package].sort(key=lambda x: x['timestamp'])
+        
+        print(f"[TemporalPageRank] Found {len(self.package_versions)} unique packages")
     
     def localize_origin(self, cve_id, package, discovered_version=None, **kwargs):
         """Localize using Temporal PageRank"""
@@ -245,6 +310,7 @@ class TemporalPageRankLocalizer:
         versions = self.package_versions.get(package, [])
         
         if not versions:
+            print(f"[TemporalPageRank] WARNING: No versions found for package '{package}'")
             return {'origin_version': None, 'method': 'temporal_pagerank_failed'}
         
         # Build version subgraph
@@ -257,8 +323,8 @@ class TemporalPageRankLocalizer:
             return {
                 'cve_id': cve_id,
                 'package': package,
-                'origin_version': f"{package}@{origin['version']}",
-                'discovered_version': f"{package}@{discovered['version']}",
+                'origin_version': origin['version_string'],
+                'discovered_version': discovered['version_string'],
                 'confidence': 0.3,
                 'method': 'temporal_pagerank_fallback'
             }
@@ -311,8 +377,8 @@ class TemporalPageRankLocalizer:
         return {
             'cve_id': cve_id,
             'package': package,
-            'origin_version': f"{package}@{origin['version']}",
-            'discovered_version': f"{package}@{discovered['version']}",
+            'origin_version': origin['version_string'],
+            'discovered_version': discovered['version_string'],
             'confidence': 0.6,
             'method': 'temporal_pagerank',
             'version_sequence': [v['version'] for v in versions]
@@ -334,25 +400,30 @@ class CommunityOnlyLocalizer:
         self._build_package_index()
     
     def _build_package_index(self):
-        """Build package → versions index"""
+        """Build package → versions index (FIXED VERSION)"""
         self.package_versions = defaultdict(list)
+        
+        print("[CommunityOnly] Building package index...")
         
         for node_id in self.graph.nodes():
             node_data = self.graph.nodes[node_id]
-            node_str = str(node_id)
             
-            if '@' in node_str:
-                package, version = node_str.rsplit('@', 1)
+            package, version, version_string = _extract_package_version(node_id, node_data)
+            
+            if package and version:
                 timestamp = node_data.get('timestamp', 0)
                 
                 self.package_versions[package].append({
                     'version': version,
                     'node_id': node_id,
-                    'timestamp': timestamp
+                    'timestamp': timestamp,
+                    'version_string': version_string
                 })
         
         for package in self.package_versions:
             self.package_versions[package].sort(key=lambda x: x['timestamp'])
+        
+        print(f"[CommunityOnly] Found {len(self.package_versions)} unique packages")
     
     def localize_origin(self, cve_id, package, discovered_version=None, **kwargs):
         """Localize using Community Detection only"""
@@ -360,6 +431,7 @@ class CommunityOnlyLocalizer:
         versions = self.package_versions.get(package, [])
         
         if not versions:
+            print(f"[CommunityOnly] WARNING: No versions found for package '{package}'")
             return {'origin_version': None, 'method': 'community_failed'}
         
         # Build version subgraph
@@ -372,8 +444,8 @@ class CommunityOnlyLocalizer:
             return {
                 'cve_id': cve_id,
                 'package': package,
-                'origin_version': f"{package}@{origin['version']}",
-                'discovered_version': f"{package}@{discovered['version']}",
+                'origin_version': origin['version_string'],
+                'discovered_version': discovered['version_string'],
                 'confidence': 0.3,
                 'method': 'community_fallback'
             }
@@ -411,8 +483,8 @@ class CommunityOnlyLocalizer:
         return {
             'cve_id': cve_id,
             'package': package,
-            'origin_version': f"{package}@{origin['version']}",
-            'discovered_version': f"{package}@{discovered['version']}",
+            'origin_version': origin['version_string'],
+            'discovered_version': discovered['version_string'],
             'confidence': 0.6,
             'method': 'community_louvain',
             'version_sequence': [v['version'] for v in versions]
