@@ -1,16 +1,13 @@
 """
-Benchmark Framework for Temporal Root Cause Localization
+bench_temporal_patched.py — Patched benchmark with fixes for:
 
-Evaluates localization algorithms on ground truth data.
+1. Version distance uses graph-derived version_sequence (not empty [])
+2. Fuzzy version matching (handles package name format mismatches) 
+3. Prediction format normalization (node_id → package@version)
+4. Timestamp-based distance fallback when version not in sequence
+5. Proper SemVer distance computation
 
-Usage:
-    python bench/bench_temporal.py \
-        --gt data/gt_temporal.jsonl \
-        --dep-graph data/dep_graph_cve.pkl \
-        --cve-meta data/cve_records_for_meta.pkl \
-        --node-texts data/nodeid_to_texts.pkl \
-        --node-scores data/node_cve_scores.pkl \
-        --output results/temporal_results.json
+Drop-in replacement: same CLI interface as bench_temporal.py
 """
 
 import sys
@@ -20,635 +17,598 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import json
 import pickle
 import argparse
-from collections import defaultdict
-from typing import Dict, List, Optional
+import re
 import time
-
-# import localization algorithms
-from src.temp_localize import (
-    TemporalLocalizer,
-    NaiveBaselineLocalizer,
-    ConservativeBaselineLocalizer
-)
-
-from bench.baseline_localizers import (
-    PageRankLocalizer,
-    BetweennessLocalizer,
-    TemporalPageRankLocalizer,
-    CommunityOnlyLocalizer
-)
-
-from cve.cvevector import CVEVector
-from ground.helper import SemVer
+from collections import defaultdict
+from typing import Dict, List, Optional, Tuple
 
 
-class TemporalLocalizationBenchmark:
+# ============================================================================
+# Version distance computation (the core fix)
+# ============================================================================
+
+def normalize_version_string(v: str) -> Tuple[str, str]:
     """
-    Benchmark framework for temporal localization
-    
-    Evaluates:
-    - Version distance accuracy
-    - Time estimation error
-    - Confidence calibration
-    - Performance (latency)
+    Normalize a version string to (package, version).
+    Handles: 'tomcat@7.0.0', 'tomcat-catalina@9.0.1', node_ids, etc.
     """
-    
-    def __init__(
-        self,
-        ground_truth_path: str,
-        dep_graph,
-        cve_meta,
-        node_texts,
-        node_cve_scores,
-        timestamps
-    ):
-        """
-        Args:
-            ground_truth_path: Path to GT JSONL file
-            dep_graph: NetworkX graph
-            cve_meta: CVE metadata dict
-            node_texts: Node texts for vector search
-            node_cve_scores: Node CVE scores
-            timestamps: Node timestamps
-        """
-        self.gt_path = ground_truth_path
-        self.graph = dep_graph
-        self.cve_meta = cve_meta
-        self.node_texts = node_texts
-        self.node_cve_scores = node_cve_scores
-        self.timestamps = timestamps
-        
-        # Load ground truth
-        self.ground_truth = self._load_ground_truth()
-        
-        # Initialize algorithms
-        self.embedder = CVEVector()
-        self.algorithms = {}
+    if not v:
+        return '', ''
 
-        # ====================================================================
-        # SIMPLE HEURISTIC BASELINES
-        # ====================================================================
-        self.algorithms['Naive (Earliest)'] = NaiveBaselineLocalizer(dep_graph)
-        self.algorithms['Conservative (3-back)'] = ConservativeBaselineLocalizer(
-                    dep_graph, n_versions_back=3
-                )
-        
-        # ====================================================================
-        # GRAPH CENTRALITY BASELINES
-        # ====================================================================
-        self.algorithms['PageRank-based'] = PageRankLocalizer(dep_graph)
-        self.algorithms['Betweenness-based'] = BetweennessLocalizer(dep_graph)
-        self.algorithms['Temporal PageRank'] = TemporalPageRankLocalizer(dep_graph)
+    v = str(v)
 
-        # ====================================================================
-        # COMMUNITY-BASED BASELINE
-        # ====================================================================
-        self.algorithms['Community-only (Louvain)'] = CommunityOnlyLocalizer(dep_graph)
+    if '@' in v:
+        pkg, ver = v.rsplit('@', 1)
+        return pkg.lower(), ver
 
-        # ====================================================================
-        # FULL MODEL (PROPOSED)
-        # ====================================================================
-        self.algorithms['TemporalLocalizer (Full)'] = TemporalLocalizer(
-            dep_graph=dep_graph,
-            cve_embedder=self.embedder,
-            node_cve_scores=node_cve_scores,
-            timestamps=timestamps,
-            node_texts=node_texts,
-            use_vector_search=True,
-            use_temporal=True,
-            use_community=True
-        )
+    # Might be a bare version number
+    if re.match(r'^\d+[\.\d]*', v):
+        return '', v
 
-        # ====================================================================
-        # ABLATION VARIANTS (optional, controlled by run_ablations flag)
-        # ====================================================================
-        self.ablation_algorithms = {
-            'w/o Vector Search': TemporalLocalizer(
-                dep_graph=dep_graph,
-                cve_embedder=self.embedder,
-                node_cve_scores=node_cve_scores,
-                timestamps=timestamps,
-                node_texts=node_texts,
-                use_vector_search=False,  # ❌ Disabled
-                use_temporal=True,
-                use_community=True
-            ),
-            'w/o Temporal': TemporalLocalizer(
-                dep_graph=dep_graph,
-                cve_embedder=self.embedder,
-                node_cve_scores=node_cve_scores,
-                timestamps=timestamps,
-                node_texts=node_texts,
-                use_vector_search=True,
-                use_temporal=False,  # ❌ Disabled
-                use_community=True
-            ),
-            'w/o Community': TemporalLocalizer(
-                dep_graph=dep_graph,
-                cve_embedder=self.embedder,
-                node_cve_scores=node_cve_scores,
-                timestamps=timestamps,
-                node_texts=node_texts,
-                use_vector_search=True,
-                use_temporal=True,
-                use_community=False  # ❌ Disabled
-            )
-        }
+    return '', v
 
-    def _load_ground_truth(self) -> List[Dict]:
-        """Load ground truth from JSONL"""
-        gt = []
-        with open(self.gt_path, 'r') as f:
-            for line in f:
-                gt.append(json.loads(line))
-        return gt
-    
-    # ========================================================================
-    # Evaluation Metrics
-    # ========================================================================
-    def evaluate_all(
-        self, 
-        max_samples: Optional[int] = None,
-        run_ablations: bool = False
-    ) -> Dict:
-        """
-        Evaluate all algorithms
-        
-        Args:
-            max_samples: Limit number of samples to evaluate (for testing)
-            run_ablations: Whether to run ablation study (slower)
-        
-        Returns:
-            {
-                algorithm_name: {
-                    'results': [...],
-                    'metrics': {...}
-                }
-            }
-        """
-        print(f"\n{'='*70}")
-        print(" TEMPORAL LOCALIZATION BENCHMARK ".center(70, "="))
-        print(f"{'='*70}\n")
-        
-        print(f"Ground Truth: {len(self.ground_truth)} entries")
-        
-        # Sample if needed
-        gt_to_eval = self.ground_truth[:max_samples] if max_samples else self.ground_truth
-        
-        print(f"Evaluating on: {len(gt_to_eval)} entries")
-        
-        if run_ablations:
-            print(f"Ablation study: ENABLED")
+
+def semver_tuple(version_str: str) -> Optional[tuple]:
+    """Parse version string into comparable tuple. Returns None if unparseable."""
+    m = re.match(r'^(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?', version_str)
+    if not m:
+        return None
+    parts = []
+    for g in m.groups():
+        if g is not None:
+            parts.append(int(g))
         else:
-            print(f"Ablation study: DISABLED (use --ablations to enable)")
-        print()
-        
-        all_results = {}
-        
-        # Evaluate main algorithms
-        for algo_name, algo in self.algorithms.items():
-            print(f"{'='*70}")
-            print(f" {algo_name} ".center(70, "="))
-            print(f"{'='*70}\n")
-            
-            results = self._evaluate_algorithm(algo, gt_to_eval, algo_name)
-            all_results[algo_name] = results
-            
-            # Print summary
-            self._print_algorithm_summary(algo_name, results)
-        
-        # Evaluate ablation variants (if enabled)
-        if run_ablations:
-            print(f"\n{'='*70}")
-            print(" ABLATION STUDY ".center(70, "="))
-            print(f"{'='*70}\n")
-            
-            for ablation_name, ablation_algo in self.ablation_algorithms.items():
-                print(f"{'='*70}")
-                print(f" {ablation_name} ".center(70, "="))
-                print(f"{'='*70}\n")
-                
-                results = self._evaluate_algorithm(ablation_algo, gt_to_eval, ablation_name)
-                all_results[ablation_name] = results
-                
-                # Print summary
-                self._print_algorithm_summary(ablation_name, results)
-        
-        # Comparison table
-        print(f"\n{'='*70}")
-        print(" ALGORITHM COMPARISON ".center(70, "="))
-        print(f"{'='*70}\n")
-        self._print_comparison_table(all_results)
-        
-        return all_results
-    
-    def _evaluate_algorithm(
-        self,
-        algorithm,
-        ground_truth: List[Dict],
-        algo_name: str
-    ) -> Dict:
-        """Evaluate a single algorithm"""
-        
-        results = []
-        predictions = []
-        
-        for i, gt_entry in enumerate(ground_truth):
-            if (i + 1) % 50 == 0:
-                print(f"  Progress: {i+1}/{len(ground_truth)}")
-            
-            # Get CVE description
-            cve_id = gt_entry['cve_id']
-            package = gt_entry['package']
-            
-            # Get CVE description from metadata
-            cve_description = self._get_cve_description(cve_id)
-            
-            # Run localization
-            try:
-                if hasattr(algorithm, 'localize_origin'):
-                    # Determine which parameters to pass based on algorithm type
-                    if 'TemporalLocalizer' in algo_name or 'w/o' in algo_name:
-                        # Full model and ablations need CVE description
-                        pred = algorithm.localize_origin(
-                            cve_id=cve_id,
-                            cve_description=cve_description,
-                            discovered_version=gt_entry.get('discovered_version'),
-                            k=15
-                        )
-                    else:
-                        # Baselines only need package
-                        pred = algorithm.localize_origin(
-                            cve_id=cve_id,
-                            package=package,
-                            discovered_version=gt_entry.get('discovered_version')
-                        )
-                else:
-                    pred = {'origin_version': None, 'method': 'error'}
+            parts.append(0)
+    return tuple(parts)
 
-                if i < 5: 
-                    print(f"\n{'='*70}")
-                    print(f"[DEBUG] Sample #{i+1}")
-                    print(f"{'='*70}")
-                    print(f"CVE ID: {cve_id}")
-                    print(f"Package: {package}")
-                    print(f"GT origin: {gt_entry.get('origin_version')}")
-                    print(f"GT discovered: {gt_entry.get('discovered_version')}")
-                    print(f"\nPrediction result:")
-                    print(f"  Type: {type(pred)}")
-                    print(f"  Full dict: {pred}")
-                    print(f"  origin_version: {pred.get('origin_version')}")
-                    print(f"  origin_version type: {type(pred.get('origin_version'))}")
-                    
-                    # check whether to convert
-                    origin_ver = pred.get('origin_version')
-                    if origin_ver and '@' not in str(origin_ver):
-                        print(f"  ⚠️ WARNING: origin_version doesn't contain '@'")
-                        print(f"     Might be a node ID instead of 'package@version'")
-                    print(f"{'='*70}\n")
+
+def compute_version_distance_fixed(
+    gt_version: str,
+    pred_version: str,
+    version_sequence: List[str],
+    graph=None,
+    package_index=None,
+    package: str = None,
+) -> Optional[int]:
+    """
+    Compute distance between two versions.
     
-            except Exception as e:
-                print(f"\n{'!'*70}")
-                print(f"[ERROR] Exception occurred")
-                print(f"{'!'*70}")
-                print(f"CVE ID: {cve_id}")
-                print(f"Exception type: {type(e).__name__}")
-                print(f"Exception message: {e}")
-                print(f"\nFull traceback:")
-                import traceback
-                traceback.print_exc()
-                print(f"{'!'*70}\n")
-                # ==========================
-                pred = {'origin_version': None, 'method': 'error', 'error': str(e)}
-                        
-            # Compute metrics
-            metrics = self._compute_single_metrics(gt_entry, pred)
-            
-            result = {
-                'cve_id': cve_id,
-                'package': package,
-                'gt_origin': gt_entry['origin_version'],
-                'pred_origin': pred.get('origin_version'),
-                'gt_discovered': gt_entry.get('discovered_version'),
-                'metrics': metrics,
-                'prediction': pred
-            }
-            
-            results.append(result)
-            predictions.append(pred)
-        
-        # Aggregate metrics
-        aggregated_metrics = self._aggregate_metrics(results)
-        
-        return {
-            'results': results,
-            'predictions': predictions,
-            'metrics': aggregated_metrics
-        }
-    
-    def _compute_single_metrics(self, gt_entry: Dict, pred: Dict) -> Dict:
-        """Compute metrics for a single prediction"""
-        
-        metrics = {
-            'exact_match': 0,
-            'within_1_version': 0,
-            'within_3_versions': 0,
-            'version_distance': None,
-            'time_error_days': None,
-            'success': 0
-        }
-        
-        gt_origin = gt_entry.get('origin_version')
-        pred_origin = pred.get('origin_version')
-        
-        if not pred_origin or not gt_origin:
-            return metrics
-        
-        metrics['success'] = 1
-        
-        # Version distance
-        version_distance = self._compute_version_distance(
-            gt_origin,
-            pred_origin,
-            gt_entry.get('version_sequence', [])
-        )
-        
-        metrics['version_distance'] = version_distance
-        
-        if version_distance is not None:
-            if version_distance == 0:
-                metrics['exact_match'] = 1
-            if version_distance <= 1:
-                metrics['within_1_version'] = 1
-            if version_distance <= 3:
-                metrics['within_3_versions'] = 1
-        
-        # Time error
-        gt_ts = gt_entry.get('origin_timestamp')
-        pred_ts = self._get_timestamp_for_version(pred_origin)
-        
-        if gt_ts and pred_ts:
-            time_error_days = abs(gt_ts - pred_ts) / (24 * 3600)
-            metrics['time_error_days'] = time_error_days
-        
-        return metrics
-    
-    def _compute_version_distance(
-        self,
-        gt_version: str,
-        pred_version: str,
-        version_sequence: List[str]
-    ) -> Optional[int]:
-        """
-        Compute distance between versions in sequence
-        
-        Returns:
-            Number of versions between gt and pred, or None if not in sequence
-        """
-        if not version_sequence:
-            # Fallback: simple equality
-            return 0 if gt_version == pred_version else 999
-        
-        # Extract version strings
-        gt_ver = gt_version.split('@')[1] if '@' in gt_version else gt_version
-        pred_ver = pred_version.split('@')[1] if '@' in pred_version else pred_version
-        
+    Strategy (in order):
+    1. If both versions are in version_sequence: index distance
+    2. If version_sequence is empty but package_index available: build sequence
+    3. SemVer-based approximate distance
+    4. Fallback: exact match = 0, else 999
+    """
+    _, gt_ver = normalize_version_string(gt_version)
+    _, pred_ver = normalize_version_string(pred_version)
+
+    if not gt_ver or not pred_ver:
+        return None
+
+    # Exact match (case-insensitive)
+    if gt_ver.lower() == pred_ver.lower():
+        return 0
+
+    # Strategy 1: Use provided version_sequence
+    if version_sequence and len(version_sequence) > 0:
         try:
             gt_idx = version_sequence.index(gt_ver)
             pred_idx = version_sequence.index(pred_ver)
             return abs(gt_idx - pred_idx)
         except ValueError:
-            # Version not in sequence
-            return 999
-    
-    def _get_timestamp_for_version(self, version_str: str) -> Optional[float]:
-        """Get timestamp for a version"""
-        if not version_str or '@' not in version_str:
-            return None
-        
-        # Find node with this version
-        for node_id in self.graph.nodes():
-            if str(node_id) == version_str:
-                return self.timestamps.get(node_id)
-        
-        return None
-    
-    def _get_cve_description(self, cve_id: str) -> str:
-        """Get CVE description from metadata"""
-        if cve_id not in self.cve_meta:
-            return ""
-        
-        records = self.cve_meta[cve_id]
-        
-        for record in records:
-            payload = record.get('builder_payload', {})
-            
-            # Try different description fields
-            for field in ['details', 'summary', 'description']:
-                if field in payload and payload[field]:
-                    return payload[field]
-        
-        return ""
-    
-    def _aggregate_metrics(self, results: List[Dict]) -> Dict:
-        """Aggregate metrics across all results"""
-        
-        metrics = {
-            'total': len(results),
-            'success': 0,
-            'exact_match': 0,
-            'within_1_version': 0,
-            'within_3_versions': 0,
-            'version_distances': [],
-            'time_errors': [],
-            'latencies': []
-        }
-        
-        for result in results:
-            m = result['metrics']
-            pred = result['prediction']
-            
-            if m['success']:
-                metrics['success'] += 1
-            
-            if m['exact_match']:
-                metrics['exact_match'] += 1
-            
-            if m['within_1_version']:
-                metrics['within_1_version'] += 1
-            
-            if m['within_3_versions']:
-                metrics['within_3_versions'] += 1
-            
-            if m['version_distance'] is not None:
-                metrics['version_distances'].append(m['version_distance'])
-            
-            if m['time_error_days'] is not None:
-                metrics['time_errors'].append(m['time_error_days'])
-            
-            if 'time_ms' in pred:
-                metrics['latencies'].append(pred['time_ms'])
-        
-        # Compute rates
-        total = metrics['total']
-        metrics['success_rate'] = metrics['success'] / total if total > 0 else 0
-        metrics['exact_match_rate'] = metrics['exact_match'] / total if total > 0 else 0
-        metrics['within_1_rate'] = metrics['within_1_version'] / total if total > 0 else 0
-        metrics['within_3_rate'] = metrics['within_3_versions'] / total if total > 0 else 0
-        
-        # Compute statistics
-        if metrics['version_distances']:
-            vd = metrics['version_distances']
-            metrics['mean_version_distance'] = sum(vd) / len(vd)
-            metrics['median_version_distance'] = sorted(vd)[len(vd) // 2]
-        
-        if metrics['time_errors']:
-            te = metrics['time_errors']
-            metrics['mean_time_error_days'] = sum(te) / len(te)
-            metrics['median_time_error_days'] = sorted(te)[len(te) // 2]
-        
-        if metrics['latencies']:
-            lat = metrics['latencies']
-            metrics['mean_latency_ms'] = sum(lat) / len(lat)
-            metrics['median_latency_ms'] = sorted(lat)[len(lat) // 2]
-            metrics['p95_latency_ms'] = sorted(lat)[int(len(lat) * 0.95)]
-        
-        return metrics
-    
-    # ========================================================================
-    # Reporting
-    # ========================================================================
-    
-    def _print_algorithm_summary(self, algo_name: str, results: Dict):
-        """Print summary for an algorithm"""
-        
-        metrics = results['metrics']
-        
-        print(f"Results for {algo_name}:")
-        print(f"  Total: {metrics['total']}")
-        print(f"  Success: {metrics['success']} ({metrics['success_rate']:.1%})")
-        print()
-        
-        print(f"Version Localization:")
-        print(f"  Exact Match:      {metrics['exact_match']:4d} ({metrics['exact_match_rate']:.1%})")
-        print(f"  Within 1 Version: {metrics['within_1_version']:4d} ({metrics['within_1_rate']:.1%})")
-        print(f"  Within 3 Versions:{metrics['within_3_versions']:4d} ({metrics['within_3_rate']:.1%})")
-        print()
-        
-        if 'mean_version_distance' in metrics:
-            print(f"Version Distance Error:")
-            print(f"  Mean:   {metrics['mean_version_distance']:.2f} versions")
-            print(f"  Median: {metrics['median_version_distance']:.0f} versions")
-            print()
-        
-        if 'mean_time_error_days' in metrics:
-            print(f"Time Estimation Error:")
-            print(f"  Mean:   {metrics['mean_time_error_days']:.1f} days")
-            print(f"  Median: {metrics['median_time_error_days']:.1f} days")
-            print()
-        
-        if 'mean_latency_ms' in metrics:
-            print(f"Performance:")
-            print(f"  Mean Latency:   {metrics['mean_latency_ms']:.1f} ms")
-            print(f"  Median Latency: {metrics['median_latency_ms']:.1f} ms")
-            print(f"  P95 Latency:    {metrics.get('p95_latency_ms', 0):.1f} ms")
-            print()
-    
-    def _print_comparison_table(self, all_results: Dict):
-        """Print comparison table across algorithms"""
-        
-        # Header
-        print(f"{'Algorithm':<25} {'Exact':>8} {'±1 Ver':>8} {'±3 Ver':>8} {'Mean Dist':>10} {'Latency':>10}")
-        print(f"{'-'*25} {'-'*8} {'-'*8} {'-'*8} {'-'*10} {'-'*10}")
-        
-        # Rows
-        for algo_name, results in all_results.items():
-            m = results['metrics']
-            
-            exact = f"{m['exact_match_rate']:.1%}"
-            within1 = f"{m['within_1_rate']:.1%}"
-            within3 = f"{m['within_3_rate']:.1%}"
-            mean_dist = f"{m.get('mean_version_distance', 0):.2f}"
-            latency = f"{m.get('mean_latency_ms', 0):.1f} ms" if 'mean_latency_ms' in m else "N/A"
-            
-            print(f"{algo_name:<25} {exact:>8} {within1:>8} {within3:>8} {mean_dist:>10} {latency:>10}")
-        
-        print()
-    
-    def save_results(self, results: Dict, output_path: str):
-        """Save results to JSON"""
-        
-        # Convert to serializable format
-        serializable = {}
-        
-        for algo_name, algo_results in results.items():
-            serializable[algo_name] = {
-                'metrics': algo_results['metrics'],
-                'num_results': len(algo_results['results'])
-            }
-        
-        with open(output_path, 'w') as f:
-            json.dump(serializable, f, indent=2)
-        
-        print(f"\n✓ Results saved to {output_path}")
+            # One or both versions not in sequence — try fuzzy
+            gt_idx = _fuzzy_find_in_sequence(gt_ver, version_sequence)
+            pred_idx = _fuzzy_find_in_sequence(pred_ver, version_sequence)
+            if gt_idx is not None and pred_idx is not None:
+                return abs(gt_idx - pred_idx)
 
+    # Strategy 2: Build sequence from package_index
+    if package_index and package:
+        entries = package_index.get(package, [])
+        if not entries:
+            # Fuzzy package lookup
+            for key in package_index:
+                if package.lower() in key.lower():
+                    entries = package_index[key]
+                    break
+
+        if entries:
+            seq = []
+            seen = set()
+            for e in entries:
+                v = e['version']
+                if v not in seen:
+                    seen.add(v)
+                    seq.append(v)
+
+            gt_idx = _fuzzy_find_in_sequence(gt_ver, seq)
+            pred_idx = _fuzzy_find_in_sequence(pred_ver, seq)
+            if gt_idx is not None and pred_idx is not None:
+                return abs(gt_idx - pred_idx)
+
+    # Strategy 3: SemVer distance
+    gt_sv = semver_tuple(gt_ver)
+    pred_sv = semver_tuple(pred_ver)
+    if gt_sv is not None and pred_sv is not None:
+        # Rough distance: major diff * 100 + minor diff * 10 + patch diff
+        # This gives ordinal-ish distance
+        major_diff = abs(gt_sv[0] - pred_sv[0])
+        minor_diff = abs(gt_sv[1] - pred_sv[1])
+        patch_diff = abs(gt_sv[2] - pred_sv[2])
+
+        # For "within N versions" metrics, treat as: 
+        # same major+minor = patch distance
+        # same major, diff minor = minor distance  
+        # diff major = large distance
+        if major_diff == 0 and minor_diff == 0:
+            return patch_diff
+        elif major_diff == 0:
+            return minor_diff + patch_diff
+        else:
+            return major_diff * 10 + minor_diff + patch_diff
+
+    # Fallback
+    return 999
+
+
+def _fuzzy_find_in_sequence(version: str, sequence: List[str]) -> Optional[int]:
+    """Try to find a version in a sequence, allowing fuzzy matching."""
+    # Exact
+    if version in sequence:
+        return sequence.index(version)
+
+    # Try stripping trailing .0s: 7.0.0 -> 7.0 -> 7
+    v = version
+    while v.endswith('.0'):
+        v = v[:-2]
+        if v in sequence:
+            return sequence.index(v)
+
+    # Try adding .0s: 7 -> 7.0 -> 7.0.0
+    v = version
+    for _ in range(3):
+        v = v + '.0'
+        if v in sequence:
+            return sequence.index(v)
+
+    return None
+
+
+# ============================================================================
+# Prediction format normalizer
+# ============================================================================
+
+def normalize_prediction(pred: dict, graph=None, package_index=None) -> dict:
+    """
+    Ensure prediction has origin_version in package@version format.
+    Handles cases where localizers return node_ids or bare version numbers.
+    """
+    origin = pred.get('origin_version')
+    if not origin:
+        return pred
+
+    origin = str(origin)
+
+    # Already in package@version format
+    if '@' in origin:
+        return pred
+
+    # Might be a node_id — look up in graph
+    if graph and origin in graph.nodes:
+        nd = graph.nodes[origin]
+        release = nd.get('release', '')
+        if release:
+            parts = release.split(':')
+            if len(parts) >= 3:
+                simple_pkg = parts[1].split('-')[0] if '-' in parts[1] else parts[1]
+                version = parts[2]
+                pred['origin_version'] = f"{simple_pkg}@{version}"
+                pred['_original_node_id'] = origin
+                return pred
+
+    return pred
+
+
+# ============================================================================
+# Patched single-metric computation  
+# ============================================================================
+
+def compute_single_metrics(
+    gt_entry: dict,
+    pred: dict,
+    graph=None,
+    package_index=None,
+    timestamps=None,
+) -> dict:
+    """Compute metrics for a single prediction (patched version)."""
+
+    metrics = {
+        'exact_match': 0,
+        'within_1_version': 0,
+        'within_3_versions': 0,
+        'version_distance': None,
+        'time_error_days': None,
+        'success': 0,
+    }
+
+    gt_origin = gt_entry.get('origin_version')
+    pred_origin = pred.get('origin_version')
+
+    if not pred_origin or not gt_origin:
+        return metrics
+
+    metrics['success'] = 1
+
+    # Compute version distance
+    version_distance = compute_version_distance_fixed(
+        gt_origin,
+        pred_origin,
+        gt_entry.get('version_sequence', []),
+        graph=graph,
+        package_index=package_index,
+        package=gt_entry.get('package', ''),
+    )
+
+    metrics['version_distance'] = version_distance
+
+    if version_distance is not None:
+        if version_distance == 0:
+            metrics['exact_match'] = 1
+        if version_distance <= 1:
+            metrics['within_1_version'] = 1
+        if version_distance <= 3:
+            metrics['within_3_versions'] = 1
+
+    # Time error
+    gt_ts = gt_entry.get('origin_timestamp')
+    if gt_ts and timestamps:
+        # Try to find timestamp for predicted version
+        pred_str = str(pred_origin)
+        pred_ts = None
+
+        if '@' in pred_str:
+            pred_pkg, pred_ver = pred_str.rsplit('@', 1)
+            if package_index:
+                entries = package_index.get(pred_pkg, [])
+                for e in entries:
+                    if e['version'] == pred_ver:
+                        pred_ts = e['timestamp']
+                        break
+
+        if pred_ts and gt_ts:
+            time_error_days = abs(float(gt_ts) - float(pred_ts)) / (24 * 3600)
+            metrics['time_error_days'] = time_error_days
+
+    return metrics
+
+
+# ============================================================================
+# Aggregate metrics
+# ============================================================================
+
+def aggregate_metrics(results: List[dict]) -> dict:
+    """Aggregate metrics across all results."""
+
+    metrics = {
+        'total': len(results),
+        'success': 0,
+        'exact_match': 0,
+        'within_1_version': 0,
+        'within_3_versions': 0,
+        'version_distances': [],
+        'time_errors': [],
+        'latencies': [],
+    }
+
+    for result in results:
+        m = result['metrics']
+
+        if m['success']:
+            metrics['success'] += 1
+        if m['exact_match']:
+            metrics['exact_match'] += 1
+        if m['within_1_version']:
+            metrics['within_1_version'] += 1
+        if m['within_3_versions']:
+            metrics['within_3_versions'] += 1
+
+        if m['version_distance'] is not None:
+            metrics['version_distances'].append(m['version_distance'])
+        if m['time_error_days'] is not None:
+            metrics['time_errors'].append(m['time_error_days'])
+
+        pred = result.get('prediction', {})
+        if 'time_ms' in pred:
+            metrics['latencies'].append(pred['time_ms'])
+
+    total = metrics['total']
+    metrics['success_rate'] = metrics['success'] / total if total > 0 else 0
+    metrics['exact_match_rate'] = metrics['exact_match'] / total if total > 0 else 0
+    metrics['within_1_rate'] = metrics['within_1_version'] / total if total > 0 else 0
+    metrics['within_3_rate'] = metrics['within_3_versions'] / total if total > 0 else 0
+
+    if metrics['version_distances']:
+        vd = metrics['version_distances']
+        metrics['mean_version_distance'] = sum(vd) / len(vd)
+        metrics['median_version_distance'] = sorted(vd)[len(vd) // 2]
+
+    if metrics['time_errors']:
+        te = metrics['time_errors']
+        metrics['mean_time_error_days'] = sum(te) / len(te)
+        metrics['median_time_error_days'] = sorted(te)[len(te) // 2]
+
+    if metrics['latencies']:
+        lat = metrics['latencies']
+        metrics['mean_latency_ms'] = sum(lat) / len(lat)
+        metrics['median_latency_ms'] = sorted(lat)[len(lat) // 2]
+        metrics['p95_latency_ms'] = sorted(lat)[int(len(lat) * 0.95)]
+
+    return metrics
+
+
+# ============================================================================
+# Patched evaluation loop
+# ============================================================================
+
+def evaluate_algorithm(
+    algorithm,
+    ground_truth: List[dict],
+    algo_name: str,
+    graph=None,
+    package_index=None,
+    timestamps=None,
+    cve_meta=None,
+    embedder=None,
+) -> dict:
+    """Evaluate a single algorithm with all fixes applied."""
+
+    results = []
+
+    for i, gt_entry in enumerate(ground_truth):
+        if (i + 1) % 50 == 0:
+            print(f"  Progress: {i+1}/{len(ground_truth)}")
+
+        cve_id = gt_entry['cve_id']
+        package = gt_entry['package']
+
+        # Get CVE description
+        cve_description = ''
+        if cve_meta and cve_id in cve_meta:
+            records = cve_meta[cve_id]
+            for record in (records if isinstance(records, list) else [records]):
+                payload = record.get('builder_payload', {})
+                for field in ['details', 'summary', 'description']:
+                    if field in payload and payload[field]:
+                        cve_description = payload[field]
+                        break
+                if cve_description:
+                    break
+
+        # Run localization
+        try:
+            if hasattr(algorithm, 'localize_origin'):
+                if 'TemporalLocalizer' in algo_name or 'w/o' in algo_name:
+                    pred = algorithm.localize_origin(
+                        cve_id=cve_id,
+                        cve_description=cve_description,
+                        discovered_version=gt_entry.get('discovered_version'),
+                        k=15
+                    )
+                else:
+                    pred = algorithm.localize_origin(
+                        cve_id=cve_id,
+                        package=package,
+                        discovered_version=gt_entry.get('discovered_version')
+                    )
+            else:
+                pred = {'origin_version': None, 'method': 'error'}
+
+        except Exception as e:
+            pred = {'origin_version': None, 'method': 'error', 'error': str(e)}
+
+        # ---- KEY FIX: Normalize prediction format ----
+        pred = normalize_prediction(pred, graph=graph, package_index=package_index)
+
+        if i < 3:
+            print(f"  [DEBUG] #{i+1}: CVE={cve_id}, pkg={package}")
+            print(f"    GT:   {gt_entry.get('origin_version')}")
+            print(f"    Pred: {pred.get('origin_version')}")
+            print(f"    Seq:  {gt_entry.get('version_sequence', [])[:5]}...")
+
+        # ---- KEY FIX: Use patched metrics ----
+        metrics = compute_single_metrics(
+            gt_entry, pred,
+            graph=graph,
+            package_index=package_index,
+            timestamps=timestamps,
+        )
+
+        result = {
+            'cve_id': cve_id,
+            'package': package,
+            'gt_origin': gt_entry['origin_version'],
+            'pred_origin': pred.get('origin_version'),
+            'gt_discovered': gt_entry.get('discovered_version'),
+            'metrics': metrics,
+            'prediction': pred,
+        }
+        results.append(result)
+
+    aggregated = aggregate_metrics(results)
+
+    return {
+        'results': results,
+        'predictions': [r['prediction'] for r in results],
+        'metrics': aggregated,
+    }
+
+
+# ============================================================================
+# Main (drop-in replacement CLI)
+# ============================================================================
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Benchmark temporal localization algorithms"
+        description="Patched benchmark for temporal localization"
     )
-    parser.add_argument('--gt', required=True, help="Ground truth JSONL file")
+    parser.add_argument('--gt', required=True, help="Ground truth JSONL (use fixed version)")
     parser.add_argument('--dep-graph', required=True, help="Dependency graph pickle")
     parser.add_argument('--cve-meta', required=True, help="CVE metadata pickle")
     parser.add_argument('--node-texts', required=True, help="Node texts pickle")
     parser.add_argument('--node-scores', required=True, help="Node CVE scores pickle")
     parser.add_argument('--output', required=True, help="Output JSON file")
-    parser.add_argument('--max-samples', type=int, help="Max samples to evaluate (for testing)")
-    parser.add_argument('--ablations', action='store_true', 
-                       help="Run ablation study (w/o Vector, w/o Temporal, w/o Community)")
-    
+    parser.add_argument('--max-samples', type=int, help="Max samples to evaluate")
+    parser.add_argument('--ablations', action='store_true', help="Run ablation study")
+
     args = parser.parse_args()
-    
+
     # Load data
     print("Loading data...")
-    
+
     with open(args.dep_graph, 'rb') as f:
         dep_graph = pickle.load(f)
     print(f"  Graph: {dep_graph.number_of_nodes()} nodes")
-    
+
     with open(args.cve_meta, 'rb') as f:
         cve_meta = pickle.load(f)
     print(f"  CVE metadata: {len(cve_meta)} entries")
-    
+
     with open(args.node_texts, 'rb') as f:
         node_texts = pickle.load(f)
     print(f"  Node texts: {len(node_texts)} entries")
-    
+
     with open(args.node_scores, 'rb') as f:
         node_cve_scores = pickle.load(f)
     print(f"  Node scores: {len(node_cve_scores)} entries")
-    
-    # Extract timestamps from graph
+
     timestamps = {n: dep_graph.nodes[n].get('timestamp', 0) for n in dep_graph.nodes()}
-    
-    # Run benchmark
-    benchmark = TemporalLocalizationBenchmark(
-        ground_truth_path=args.gt,
-        dep_graph=dep_graph,
-        cve_meta=cve_meta,
-        node_texts=node_texts,
-        node_cve_scores=node_cve_scores,
-        timestamps=timestamps
+
+    # Build package index (KEY ADDITION)
+    from ground.fix_gt_and_bench import build_package_index
+    package_index = build_package_index(dep_graph)
+    print(f"  Package index: {len(package_index)} packages")
+
+    # Load GT
+    print(f"\nLoading ground truth from {args.gt}...")
+    gt = []
+    with open(args.gt, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                gt.append(json.loads(line))
+    print(f"  {len(gt)} entries")
+
+    # Verify GT has version sequences
+    has_seq = sum(1 for e in gt if e.get('version_sequence'))
+    print(f"  Entries with version_sequence: {has_seq}/{len(gt)}")
+    if has_seq == 0:
+        print("  ⚠️  WARNING: No version sequences found!")
+        print("  Run fix_gt_and_bench.py first to populate them.")
+        print("  Continuing with SemVer fallback distance...")
+
+    gt_to_eval = gt[:args.max_samples] if args.max_samples else gt
+    print(f"  Evaluating on: {len(gt_to_eval)} entries")
+
+    # Initialize algorithms
+    from bench.baseline_localizers import (
+        PageRankLocalizer, BetweennessLocalizer,
+        TemporalPageRankLocalizer, CommunityOnlyLocalizer
     )
-    
-    results = benchmark.evaluate_all(
-        max_samples=args.max_samples,
-        run_ablations=args.ablations
+    from src.temp_localize import (
+        TemporalLocalizer, NaiveBaselineLocalizer, ConservativeBaselineLocalizer
     )
-    
-    # Save results
-    benchmark.save_results(results, args.output)
+    from cve.cvevector import CVEVector
+
+    embedder = CVEVector()
+
+    algorithms = {
+        'Naive (Earliest)': NaiveBaselineLocalizer(dep_graph),
+        'Conservative (3-back)': ConservativeBaselineLocalizer(dep_graph, n_versions_back=3),
+        'PageRank-based': PageRankLocalizer(dep_graph),
+        'Betweenness-based': BetweennessLocalizer(dep_graph),
+        'Temporal PageRank': TemporalPageRankLocalizer(dep_graph),
+        'Community-only (Louvain)': CommunityOnlyLocalizer(dep_graph),
+        'TemporalLocalizer (Full)': TemporalLocalizer(
+            dep_graph=dep_graph, cve_embedder=embedder,
+            node_cve_scores=node_cve_scores, timestamps=timestamps,
+            node_texts=node_texts,
+            use_vector_search=True, use_temporal=True, use_community=True
+        ),
+    }
+
+    ablation_algorithms = {}
+    if args.ablations:
+        ablation_algorithms = {
+            'w/o Vector Search': TemporalLocalizer(
+                dep_graph=dep_graph, cve_embedder=embedder,
+                node_cve_scores=node_cve_scores, timestamps=timestamps,
+                node_texts=node_texts,
+                use_vector_search=False, use_temporal=True, use_community=True
+            ),
+            'w/o Temporal': TemporalLocalizer(
+                dep_graph=dep_graph, cve_embedder=embedder,
+                node_cve_scores=node_cve_scores, timestamps=timestamps,
+                node_texts=node_texts,
+                use_vector_search=True, use_temporal=False, use_community=True
+            ),
+            'w/o Community': TemporalLocalizer(
+                dep_graph=dep_graph, cve_embedder=embedder,
+                node_cve_scores=node_cve_scores, timestamps=timestamps,
+                node_texts=node_texts,
+                use_vector_search=True, use_temporal=True, use_community=False
+            ),
+        }
+
+    all_algorithms = {**algorithms, **ablation_algorithms}
+
+    # Run evaluation
+    all_results = {}
+    for algo_name, algo in all_algorithms.items():
+        print(f"\n{'='*60}")
+        print(f" {algo_name} ".center(60, '='))
+        print(f"{'='*60}")
+
+        results = evaluate_algorithm(
+            algo, gt_to_eval, algo_name,
+            graph=dep_graph,
+            package_index=package_index,
+            timestamps=timestamps,
+            cve_meta=cve_meta,
+            embedder=embedder,
+        )
+        all_results[algo_name] = results
+
+        m = results['metrics']
+        print(f"  Success:      {m['success']:4d}/{m['total']} ({m['success_rate']:.1%})")
+        print(f"  Exact match:  {m['exact_match']:4d}/{m['total']} ({m['exact_match_rate']:.1%})")
+        print(f"  Within 1 ver: {m['within_1_version']:4d}/{m['total']} ({m['within_1_rate']:.1%})")
+        print(f"  Within 3 ver: {m['within_3_versions']:4d}/{m['total']} ({m['within_3_rate']:.1%})")
+        if 'mean_version_distance' in m:
+            print(f"  Mean dist:    {m['mean_version_distance']:.2f}")
+
+    # Comparison table
+    print(f"\n{'='*70}")
+    print(f"{'Algorithm':<25} {'Success':>8} {'Exact':>8} {'±1 Ver':>8} {'±3 Ver':>8} {'Mean Dist':>10}")
+    print(f"{'-'*25} {'-'*8} {'-'*8} {'-'*8} {'-'*8} {'-'*10}")
+    for name, res in all_results.items():
+        m = res['metrics']
+        print(f"{name:<25} {m['success_rate']:.1%}{'':<3} {m['exact_match_rate']:.1%}{'':<3} "
+              f"{m['within_1_rate']:.1%}{'':<3} {m['within_3_rate']:.1%}{'':<3} "
+              f"{m.get('mean_version_distance', 0):.2f}")
+
+    # Save
+    serializable = {}
+    for name, res in all_results.items():
+        serializable[name] = {
+            'metrics': res['metrics'],
+            'num_results': len(res['results']),
+        }
+
+    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+    with open(args.output, 'w') as f:
+        json.dump(serializable, f, indent=2)
+    print(f"\n✓ Results saved to {args.output}")
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

@@ -103,39 +103,46 @@ class TemporalLocalizer:
     def _build_package_index(self):
         """Build index: package -> [(version, node_id, timestamp)]"""
         self.package_versions = defaultdict(list)
-        
         for node_id in self.graph.nodes():
             node_data = self.graph.nodes[node_id]
-            package, version = self._parse_node(node_id, node_data)
-            
-            if package and version:
-                self.package_versions[package].append({
-                    'version': version,
-                    'node_id': node_id,
-                    'timestamp': node_data.get('timestamp', 0)
-                })
-        
-        # Sort by timestamp
+            release = node_data.get('release', '')
+            if not release:
+                continue
+            parts = release.split(':')
+            if len(parts) >= 3:
+                artifact_id = parts[1]
+                version = parts[2]
+            elif len(parts) == 2:
+                artifact_id = parts[0]
+                version = parts[1]
+            else:
+                continue
+            timestamp = node_data.get('timestamp', 0)
+            self.package_versions[artifact_id].append({
+                'version': version,
+                'node_id': node_id,
+                'timestamp': timestamp
+            })
         for package in self.package_versions:
             self.package_versions[package].sort(key=lambda x: x['timestamp'])
     
     def _parse_node(self, node_id, node_data):
         """Extract package and version from node"""
+        release = node_data.get('release', '')
+        if release:
+            parts = release.split(':')
+            if len(parts) >= 3:
+                artifact_id = parts[1]
+                version = parts[2]
+                return artifact_id, version
+            elif len(parts) == 2:
+                return parts[0], parts[1]
+        # Fallback: try node_id
         node_str = str(node_id)
-        
         if '@' in node_str:
-            parts = node_str.rsplit('@', 1)
-            return parts[0], parts[1]
-        
-        package = node_data.get('package') or node_data.get('release', '')
-        version = node_data.get('version', '')
-        
-        if '@' in package:
-            parts = package.rsplit('@', 1)
-            return parts[0], parts[1]
-        
-        return package, version
-    
+            pkg, ver = node_str.rsplit('@', 1)
+            return pkg, ver
+        return None, None
     # ========================================================================
     # Core Localization Algorithm
     # ========================================================================
@@ -630,18 +637,26 @@ class NaiveBaselineLocalizer:
         
         for node_id in self.graph.nodes():
             node_data = self.graph.nodes[node_id]
-            node_str = str(node_id)
+            release = node_data.get('release','')
+
+            if not release:
+                continue
             
-            if '@' in node_str:
-                package, version = node_str.rsplit('@', 1)
-                timestamp = node_data.get('timestamp', 0)
-                
-                self.package_versions[package].append({
-                    'version': version,
-                    'node_id': node_id,
-                    'timestamp': timestamp
-                })
-        
+            parts = release.split(':')
+            if len(parts) >= 3:
+                artifact_id = parts[1]
+                version = parts[2]
+            elif len(parts) == 2:
+                artifact_id = parts[0]
+                version = parts[1]
+            else:
+                continue
+            timestamp = node_data.get('timestamp', 0)
+            self.package_versions[artifact_id].append({
+                'version': version,
+                'node_id': node_id,
+                'timestamp': timestamp
+            })
         for package in self.package_versions:
             self.package_versions[package].sort(key=lambda x: x['timestamp'])
 
@@ -675,21 +690,26 @@ class ConservativeBaselineLocalizer:
     def _build_package_index(self):
         """Build package index"""
         self.package_versions = defaultdict(list)
-        
         for node_id in self.graph.nodes():
             node_data = self.graph.nodes[node_id]
-            node_str = str(node_id)
-            
-            if '@' in node_str:
-                package, version = node_str.rsplit('@', 1)
-                timestamp = node_data.get('timestamp', 0)
-                
-                self.package_versions[package].append({
-                    'version': version,
-                    'node_id': node_id,
-                    'timestamp': timestamp
-                })
-        
+            release = node_data.get('release', '')
+            if not release:
+                continue
+            parts = release.split(':')
+            if len(parts) >= 3:
+                artifact_id = parts[1]
+                version = parts[2]
+            elif len(parts) == 2:
+                artifact_id = parts[0]
+                version = parts[1]
+            else:
+                continue
+            timestamp = node_data.get('timestamp', 0)
+            self.package_versions[artifact_id].append({
+                'version': version,
+                'node_id': node_id,
+                'timestamp': timestamp
+            })
         for package in self.package_versions:
             self.package_versions[package].sort(key=lambda x: x['timestamp'])
     

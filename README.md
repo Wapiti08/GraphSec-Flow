@@ -78,8 +78,11 @@ python3 graph_cve.py --dep_graph {your local path}/data/dep_graph.pkl --cve_json
  
 - generate ground truth data
 ```
-# with depth 3 without time constraint:
-python3 gt_builder_parallel.py   --dep-graph /workspace/GraphSec-Flow/data/dep_graph_cve.pkl   --cve-meta /workspace/GraphSec-Flow/data/cve_records_for_meta.pkl   --out-root /workspace/GraphSec-Flow/data   --out-paths /workspace/GraphSec-Flow/data   --no-time-constraint   --max-depth 3   --num-workers 64
+python ground/gt_temporal_from_roots.py \
+    --dep-graph data/dep_graph_cve.pkl \
+    --cve-meta data/cve_records_for_meta.pkl \
+    --output data/gt_temporal_fixed.jsonl \
+    --raw-osv-fallback
 ```
 
 - Root Cause Analysis
@@ -143,23 +146,22 @@ EOF
 
 - Benchmark
 ```
-python bench/run_all_eval.py   --gt data/gt_temporal.jsonl   --dep-graph data/dep_graph_cve.pkl   --cve-meta data/cve_records_for_meta.pkl   --node-texts data/nodeid_to_texts.pkl   --node-scores data/node_cve_scores.pkl   --output-dir results/  
- --max-samples 10
+# Normal run — skips anything already cached
+nohup python bench/run_all_eval_parallel.py \
+    --gt data/gt_resolved.jsonl \
+    --dep-graph data/dep_graph_cve.pkl \
+    --cve-meta data/cve_records_for_meta.pkl \
+    --node-texts data/nodeid_to_texts.pkl \
+    --node-scores data/node_cve_scores.pkl \
+    --output-dir results/ \
+    --cpus 32  \
+    --mem-limit-gb 700 > logs/all_results.txt 2>&1 &
 
-```
-
-- Small Scale Validation Benchmark
-
-```
-# for small graph
-nohup python bench/benchmark_opt.py --dep-graph data/dep_graph_cve_2hop.pkl --ref-layer data/ref_paths_layer_3.jsonl --node-texts data/nodeid_to_texts.pkl --cve-meta data/cve_records_for_meta.pkl --per-cve data/per_cve_scores.pkl --node-scores data/node_cve_scores.pkl > logs/benchmark_2hop_g3_baseline.txt 2>&1 &
-# for full graph
-nohup python bench/benchmark_opt.py --dep-graph data/dep_graph_cve.pkl --ref-layer data/ref_paths_layer_3.jsonl --node-texts data/nodeid_to_texts.pkl --cve-meta data/cve_records_for_meta.pkl --per-cve data/per_cve_scores.pkl --node-scores data/node_cve_scores.pkl > logs/benchmark_g3_baseline.txt 2>&1 &
-
-# for small graph
-nohup python bench/benchmark_opt.py --dep-graph data/dep_graph_cve_2hop_random.pkl --ref-layer data/ref_paths_layer_3.jsonl --node-texts data/nodeid_to_texts.pkl --cve-meta data/cve_records_for_meta.pkl --per-cve data/per_cve_scores.pkl --node-scores data/node_cve_scores.pkl > logs/benchmark_2hop_g3_random.txt 2>&1 &
-# for full graph
-nohup python bench/benchmark_opt.py --dep-graph data/validation/dep_graph_cve_random_timestamps.pkl --ref-layer data/ref_paths_layer_3.jsonl --node-texts data/nodeid_to_texts.pkl --cve-meta data/cve_records_for_meta.pkl --per-cve data/per_cve_scores.pkl --node-scores data/node_cve_scores.pkl > logs/benchmark_g3_random.txt 2>&1 &
+# Force re-run everything from scratch
+python bench/run_all_eval_parallel.py \
+    --gt data/gt_temporal_fixed.jsonl \
+    ... \
+    --force
 
 ```
 
